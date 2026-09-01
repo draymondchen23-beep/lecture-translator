@@ -1,7 +1,8 @@
 import { sites } from "@openai/sites-vite-plugin";
 import vinext from "vinext";
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import hostingConfig from "./.openai/hosting.json";
+import { qwenRealtimeProxy } from "./server/realtime-proxy";
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";
@@ -33,7 +34,7 @@ const localBindingConfig = {
     : [],
 };
 
-export default defineConfig(async () => {
+export default defineConfig(async ({ mode }) => {
   // Keep Wrangler and Miniflare state project-local. These are non-secret tool
   // settings; application environment belongs in ignored `.env*` files.
   process.env.WRANGLER_WRITE_LOGS ??= "false";
@@ -42,12 +43,21 @@ export default defineConfig(async () => {
 
   // Wrangler snapshots its log path while the Cloudflare plugin is imported.
   const { cloudflare } = await import("@cloudflare/vite-plugin");
+  const env = loadEnv(mode, process.cwd(), "");
+  const qwen = {
+    apiKey: env.DASHSCOPE_API_KEY || process.env.DASHSCOPE_API_KEY,
+    workspaceId: env.DASHSCOPE_WORKSPACE_ID || process.env.DASHSCOPE_WORKSPACE_ID,
+    model: env.QWEN_REALTIME_MODEL || process.env.QWEN_REALTIME_MODEL,
+    region: env.QWEN_REALTIME_REGION || process.env.QWEN_REALTIME_REGION,
+  };
 
   return {
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    server: {
+      port: 3001,
+      ...(isCodexSeatbeltSandbox ? { watch: { useFsEvents: false, usePolling: true } } : {}),
+    },
     plugins: [
+      qwenRealtimeProxy(qwen),
       vinext(),
       sites(),
       cloudflare({

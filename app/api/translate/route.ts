@@ -1,0 +1,85 @@
+type Environment = {
+  QWEN_API_KEY?: string;
+  DASHSCOPE_API_KEY?: string;
+  QWEN_API_URL?: string;
+  QWEN_MT_MODEL?: string;
+  DASHSCOPE_WORKSPACE_ID?: string;
+  TENCENT_SECRET_ID?: string;
+  TENCENT_SECRET_KEY?: string;
+  TENCENT_APP_ID?: string;
+};
+
+import { createIncrementalRefiner, validateIncrementalRequest } from "./incremental-refinement.mjs";
+
+type QwenResponse = { choices?: Array<{ message?: { content?: unknown } }>; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } };
+type TranslateRequest = { text?: unknown; terminology?: unknown; lectureId?: unknown; sessionId?: unknown; segmentId?: unknown };
+
+const DEFAULT_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+const refiner = createIncrementalRefiner();
+
+function json(body: object, status = 200) {
+  return Response.json(body, { status, headers: { "cache-control": "no-store" } });
+}
+
+async function environment() {
+  const { env } = await import("cloudflare:workers");
+  return env as Environment;
+}
+
+function terminologyPrompt(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  const lines = Object.entries(value as Record<string, unknown>)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+    .slice(0, 100)
+    .map(([english, chinese]) => `${english} => ${chinese}`);
+  return lines.length ? `\nUse these established terms consistently:\n${lines.join("\n")}` : "";
+}
+
+export async function GET() {
+  const env = await environment();
+  return json({
+    providers: {
+      qwen: Boolean((env.QWEN_API_KEY || env.DASHSCOPE_API_KEY) && env.DASHSCOPE_WORKSPACE_ID),
+      tencent: Boolean(env.TENCENT_SECRET_ID && env.TENCENT_SECRET_KEY && env.TENCENT_APP_ID),
+    },
+    refinement: Boolean(env.QWEN_API_KEY || env.DASHSCOPE_API_KEY),
+    usage: refiner.usage(),
+  });
+}
+
+export async function POST(request: Request) {
+  const body = await request.json().catch(() => ({})) as TranslateRequest;
+  const checked = validateIncrementalRequest(body);
+  if ("error" in checked) return json({ error: checked.error }, checked.status);
+  const { value } = checked;
+  const env = await environment();
+  const apiKey = env.QWEN_API_KEY || env.DASHSCOPE_API_KEY;
+  if (!apiKey) return json({ error: "Qwen-MT refinement is not configured on the server." }, 503);
+
+  try {
+    const refined = await refiner.run(value, async () => {
+      const response = await fetch(env.QWEN_API_URL?.trim() || DEFAULT_URL, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          model: env.QWEN_MT_MODEL?.trim() || "qwen-mt-plus",
+          messages: [{ role: "user", content: `${value.text}${terminologyPrompt(body.terminology)}` }],
+          translation_options: { source_lang: "English", target_lang: "Chinese", domains: "University lecture, academic English. Preserve formulas, numbers, units, names and established English abbreviations. On first use, format uncertain academic terms as 中文（English Term）." },
+        }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!response.ok) throw new Error(response.status === 429 ? "Qwen-MT is busy or its quota is exhausted." : "Qwen-MT did not accept the refinement request.");
+      const result = await response.json().catch(() => ({})) as QwenResponse;
+      const translation = result.choices?.[0]?.message?.content;
+      if (typeof translation !== "string" || !translation.trim()) throw new Error("Qwen-MT returned an unreadable translation.");
+      return {
+        translation: translation.trim(), provider: "qwen-mt",
+        inputTokens: typeof result.usage?.prompt_tokens === "number" ? result.usage.prompt_tokens : undefined,
+        outputTokens: typeof result.usage?.completion_tokens === "number" ? result.usage.completion_tokens : undefined,
+      };
+    });
+    return json(refined);
+  } catch {
+    return json({ error: "Unable to reach Qwen-MT refinement." }, 502);
+  }
+}

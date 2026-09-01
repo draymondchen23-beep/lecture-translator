@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="一份会保存在本地设备上的出境准备清单。">
+  <meta name="theme-color" content="#172e45">
+  <meta property="og:title" content="出境准备清单">
+  <meta property="og:description" content="一份会保存在本地设备上的出境准备清单。">
+  <meta property="og:image" content="og.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="出境准备清单">
+  <meta name="twitter:description" content="一份会保存在本地设备上的出境准备清单。">
+  <meta name="twitter:image" content="og.png">
+  <title>出境准备清单</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="travel-desk">
+    <div class="paper-sheet">
+      <header class="folio-head">
+        <div class="folio-symbol" aria-hidden="true"><svg viewBox="0 0 48 48" fill="none"><path d="M12 5h18l8 8v30H12z" stroke="currentColor" stroke-width="2"/><path d="M30 5v9h8M18 22h14M18 29h14M18 36h9" stroke="currentColor" stroke-width="2"/></svg></div>
+        <div><h1>出境准备清单</h1><p class="intro">你的出境清单，可继续添加。把临行前的琐事，收进这一份资料夹。</p></div>
+      </header>
+      <section class="summary" aria-label="清单进度">
+        <div><strong id="completed-count">0<span id="total-count">/61</span></strong><p>已完成</p></div>
+        <div><strong id="remaining-count">61</strong><p>待准备</p></div>
+        <div class="stamp" id="stamp" aria-label="准备中">IN PREP</div>
+      </section>
+      <form class="add-form" id="add-form">
+        <label for="new-checklist-item">新增事项</label>
+        <div class="add-row"><input id="new-checklist-item" maxlength="80" placeholder="例如：确认机场接送安排" autocomplete="off"><button type="submit" disabled>加入清单</button></div>
+      </form>
+      <nav class="filters" aria-label="筛选清单">
+        <button type="button" class="active" aria-pressed="true" data-filter="全部">全部</button>
+        <button type="button" aria-pressed="false" data-filter="待准备">待准备</button>
+        <button type="button" aria-pressed="false" data-filter="已完成">已完成</button>
+      </nav>
+      <section class="checklist" id="checklist" aria-live="polite" aria-label="全部事项"></section>
+    </div>
+    <p class="storage-status" id="storage-status" role="status" hidden></p>
+    <footer id="footer-status">资料夹会自动保存在这台设备上 · 正在读取</footer>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

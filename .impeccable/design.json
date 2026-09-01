@@ -1,0 +1,142 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-31T00:00:00+08:00",
+  "title": "Design System: Alpine Listening Room",
+  "extensions": {
+    "colorMeta": {
+      "ink": { "role": "neutral", "displayName": "Room Ink", "canonical": "#fffaf3", "tonalRamp": ["#251a14", "#51372a", "#805640", "#b47d5b", "#d6a17e", "#ebc3a2", "#f6e4d3", "#fffaf3"] },
+      "white": { "role": "neutral", "displayName": "Stage White", "canonical": "#fff", "tonalRamp": ["#251a14", "#51372a", "#805640", "#b47d5b", "#d6a17e", "#ebc3a2", "#f6e4d3", "#fff"] },
+      "spoken-ink": { "role": "neutral", "displayName": "Spoken Cream", "canonical": "#f9eee1", "tonalRamp": ["#251a14", "#51372a", "#805640", "#b47d5b", "#d6a17e", "#ebc3a2", "#f6e4d3", "#f9eee1"] },
+      "muted": { "role": "neutral", "displayName": "Muted Cream", "canonical": "rgba(255, 248, 238, .72)", "tonalRamp": ["rgba(37,26,20,.72)", "rgba(81,55,42,.72)", "rgba(128,86,64,.72)", "rgba(180,125,91,.72)", "rgba(214,161,126,.72)", "rgba(235,195,162,.72)", "rgba(246,228,211,.72)", "rgba(255,248,238,.72)"] },
+      "quiet": { "role": "neutral", "displayName": "Quiet Cream", "canonical": "rgba(255, 248, 238, .52)", "tonalRamp": ["rgba(37,26,20,.52)", "rgba(81,55,42,.52)", "rgba(128,86,64,.52)", "rgba(180,125,91,.52)", "rgba(214,161,126,.52)", "rgba(235,195,162,.52)", "rgba(246,228,211,.52)", "rgba(255,248,238,.52)"] },
+      "line": { "role": "neutral", "displayName": "Warm Hairline", "canonical": "rgba(255, 251, 243, .22)", "tonalRamp": ["rgba(37,26,20,.22)", "rgba(81,55,42,.22)", "rgba(128,86,64,.22)", "rgba(180,125,91,.22)", "rgba(214,161,126,.22)", "rgba(235,195,162,.22)", "rgba(246,228,211,.22)", "rgba(255,251,243,.22)"] },
+      "scene-base": { "role": "neutral", "displayName": "Slate Base", "canonical": "#1a2a31", "tonalRamp": ["#101a1e", "#1a2a31", "#2b4249", "#426068", "#638087", "#8da7aa", "#c1d0cf", "#eef3ef"] },
+      "orange": { "role": "primary", "displayName": "Sunrise Orange", "canonical": "#ff7a21", "tonalRamp": ["#6b2200", "#a83d00", "#d95b08", "#ff7a21", "#ff9b55", "#ffb982", "#ffd0ae", "#fff0e3"] },
+      "orange-deep": { "role": "primary", "displayName": "Deep Sunrise Ink", "canonical": "#211610", "tonalRamp": ["#211610", "#46281c", "#70412a", "#9c6140", "#c2865f", "#dfae8e", "#f1d3bd", "#fff3e8"] },
+      "sunrise-soft": { "role": "secondary", "displayName": "Soft Sunrise", "canonical": "#ffd1a5", "tonalRamp": ["#6b371a", "#a55e2b", "#d88b4f", "#f4b97d", "#ffd1a5", "#ffdfc2", "#ffeadd", "#fff7f0"] },
+      "sunrise-label": { "role": "secondary", "displayName": "Sunrise Label", "canonical": "#ffd7b1", "tonalRamp": ["#6b371a", "#a55e2b", "#d88b4f", "#f4b97d", "#ffd7b1", "#ffe1c7", "#ffecdc", "#fff8f0"] },
+      "focus": { "role": "tertiary", "displayName": "Warm Focus", "canonical": "#ffd0a4", "tonalRamp": ["#6b371a", "#a55e2b", "#d88b4f", "#f4b97d", "#ffd0a4", "#ffdfc0", "#ffebd9", "#fff7ed"] },
+      "caret": { "role": "primary", "displayName": "Caret Orange", "canonical": "#ffb274", "tonalRamp": ["#6b371a", "#a55e2b", "#d88b4f", "#ef9658", "#ffb274", "#ffca9e", "#ffdfc3", "#fff4e9"] },
+      "selection": { "role": "primary", "displayName": "Selection Orange", "canonical": "#ff7a21", "tonalRamp": ["#6b2200", "#a83d00", "#d95b08", "#ff7a21", "#ff9b55", "#ffb982", "#ffd0ae", "#fff0e3"] },
+      "selection-ink": { "role": "neutral", "displayName": "Selection Ink", "canonical": "#23160f", "tonalRamp": ["#23160f", "#4a2a1a", "#75442a", "#a06440", "#c88e6a", "#e3b69a", "#f2d8c5", "#fff4ea"] },
+      "error": { "role": "tertiary", "displayName": "Error Cream", "canonical": "#ffd0ca", "tonalRamp": ["#6b2421", "#a24039", "#d9695f", "#f49b91", "#ffd0ca", "#ffdedb", "#ffebea", "#fff8f7"] },
+      "placeholder": { "role": "neutral", "displayName": "Placeholder Cream", "canonical": "rgba(255, 244, 231, .55)", "tonalRamp": ["rgba(37,26,20,.55)", "rgba(81,55,42,.55)", "rgba(128,86,64,.55)", "rgba(180,125,91,.55)", "rgba(214,161,126,.55)", "rgba(235,195,162,.55)", "rgba(246,228,211,.55)", "rgba(255,244,231,.55)"] },
+      "nav-glass": { "role": "neutral", "displayName": "Navigation Glass", "canonical": "rgba(29, 31, 30, .36)", "tonalRamp": ["rgba(10,14,14,.36)", "rgba(29,31,30,.36)", "rgba(51,53,49,.36)", "rgba(85,81,69,.36)", "rgba(140,119,94,.36)", "rgba(195,164,132,.36)", "rgba(233,211,189,.36)", "rgba(255,247,235,.36)"] },
+      "drawer-glass": { "role": "neutral", "displayName": "Drawer Glass", "canonical": "rgba(33, 35, 33, .74)", "tonalRamp": ["rgba(10,14,14,.74)", "rgba(33,35,33,.74)", "rgba(61,60,53,.74)", "rgba(100,91,74,.74)", "rgba(151,127,98,.74)", "rgba(204,171,137,.74)", "rgba(236,213,191,.74)", "rgba(255,250,239,.74)"] },
+      "live-glass": { "role": "neutral", "displayName": "Live Glass", "canonical": "rgba(34, 37, 35, .42)", "tonalRamp": ["rgba(13,18,17,.42)", "rgba(34,37,35,.42)", "rgba(67,64,54,.42)", "rgba(112,96,75,.42)", "rgba(163,135,103,.42)", "rgba(211,177,143,.42)", "rgba(240,217,194,.42)", "rgba(255,250,239,.42)"] },
+      "transcript-glass": { "role": "neutral", "displayName": "Transcript Glass", "canonical": "rgba(32, 35, 33, .52)", "tonalRamp": ["rgba(13,18,17,.52)", "rgba(32,35,33,.52)", "rgba(67,64,54,.52)", "rgba(112,96,75,.52)", "rgba(163,135,103,.52)", "rgba(211,177,143,.52)", "rgba(240,217,194,.52)", "rgba(255,250,239,.52)"] },
+      "notes-glass": { "role": "neutral", "displayName": "Notes Glass", "canonical": "rgba(31, 35, 33, .56)", "tonalRamp": ["rgba(12,18,17,.56)", "rgba(31,35,33,.56)", "rgba(67,64,54,.56)", "rgba(112,96,75,.56)", "rgba(163,135,103,.56)", "rgba(211,177,143,.56)", "rgba(240,217,194,.56)", "rgba(255,250,239,.56)"] },
+      "composer-glass": { "role": "neutral", "displayName": "Composer Glass", "canonical": "rgba(34, 35, 34, .77)", "tonalRamp": ["rgba(11,16,15,.77)", "rgba(34,35,34,.77)", "rgba(67,64,54,.77)", "rgba(112,96,75,.77)", "rgba(163,135,103,.77)", "rgba(211,177,143,.77)", "rgba(240,217,194,.77)", "rgba(255,250,239,.77)"] },
+      "field-glass": { "role": "neutral", "displayName": "Field Glass", "canonical": "rgba(10, 14, 14, .3)", "tonalRamp": ["rgba(10,14,14,.3)", "rgba(29,31,30,.3)", "rgba(61,60,53,.3)", "rgba(100,91,74,.3)", "rgba(151,127,98,.3)", "rgba(204,171,137,.3)", "rgba(236,213,191,.3)", "rgba(255,250,239,.3)"] },
+      "note-item-glass": { "role": "neutral", "displayName": "Note Item Glass", "canonical": "rgba(19, 22, 21, .36)", "tonalRamp": ["rgba(10,14,14,.36)", "rgba(19,22,21,.36)", "rgba(61,60,53,.36)", "rgba(100,91,74,.36)", "rgba(151,127,98,.36)", "rgba(204,171,137,.36)", "rgba(236,213,191,.36)", "rgba(255,250,239,.36)"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Dawn Display", "purpose": "Central Chinese empty-state invitation." },
+      "headline": { "displayName": "Lecture Context", "purpose": "Current lecture header." },
+      "note-title": { "displayName": "Review Title", "purpose": "Structured notes heading." },
+      "body": { "displayName": "Resolved Body", "purpose": "Chinese understanding and lecture content." },
+      "live-english": { "displayName": "Sound in Transit", "purpose": "Interim and captured English source." },
+      "label": { "displayName": "Operating Label", "purpose": "Provider, status, and compact control labels." }
+    },
+    "shadows": [
+      { "name": "drawer-depth", "value": "16px 22px 44px rgba(9, 13, 14, .38), inset 0 1px rgba(255, 255, 255, .12)", "purpose": "Inset mobile navigation layer." },
+      { "name": "live-line-focus", "value": "0 14px 26px rgba(13, 18, 17, .15), inset 0 1px rgba(255, 255, 255, .09)", "purpose": "Current listening status lift." },
+      { "name": "transcript-depth", "value": "0 12px 24px rgba(13, 18, 17, .16), inset 0 1px rgba(255, 255, 255, .08)", "purpose": "Spoken English separation." },
+      { "name": "notes-depth", "value": "0 20px 36px rgba(12, 18, 17, .22), inset 0 1px rgba(255, 255, 255, .1)", "purpose": "Structured review surface." },
+      { "name": "composer-foreground", "value": "0 22px 45px rgba(11, 16, 15, .32), 0 7px 14px rgba(11, 16, 15, .22), inset 0 1px rgba(255, 255, 255, .11)", "purpose": "Two-band control dock." }
+    ],
+    "motion": [
+      { "name": "control-state", "value": "240ms cubic-bezier(.16,1,.3,1)", "purpose": "Operating-control feedback." },
+      { "name": "transcript-resolution", "value": "700ms cubic-bezier(.16,1,.3,1)", "purpose": "New segment resolving into language." },
+      { "name": "drawer-slide", "value": "260ms cubic-bezier(.16,1,.3,1)", "purpose": "Mobile drawer entrance and exit." },
+      { "name": "reduced-motion", "value": "prefers-reduced-motion: reduce", "purpose": "Collapses nonessential interface transitions." }
+    ],
+    "breakpoints": [
+      { "name": "mobile", "value": "700px", "purpose": "Stacks the composer and changes navigation to the drawer." },
+      { "name": "compact", "value": "380px", "purpose": "Tightens labels and composer context." }
+    ],
+    "assets": [
+      { "path": "public/backgrounds/alpine-dawn-4k.jpg", "role": "Responsive default scene below 1920px", "embeddedGenerationProvenance": true },
+      { "path": "public/backgrounds/alpine-dawn-16k.jpg", "role": "Responsive default scene at 1920px and above", "embeddedGenerationProvenance": true }
+    ],
+    "backgroundMotion": "none; authored or uploaded background remains still"
+  },
+  "components": [
+    {
+      "name": "Sunrise Primary Action",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Orange operating action for adding or translating.",
+      "html": "<button class=\"ds-btn-primary\" type=\"button\">翻译段落</button>",
+      "css": ".ds-btn-primary { min-height: 44px; padding: 8px 11px; border: 1px solid transparent; border-radius: 9px; background: #ff7a21; color: #211610; font: 720 .75rem/1.2 -apple-system, BlinkMacSystemFont, \"PingFang SC\", sans-serif; cursor: pointer; transition: transform 240ms cubic-bezier(.16,1,.3,1), box-shadow 240ms cubic-bezier(.16,1,.3,1); } .ds-btn-primary:hover { box-shadow: 0 9px 18px rgba(25,61,75,.19); transform: translateY(-1px); } .ds-btn-primary:active { transform: translateY(1px) scale(.985); box-shadow: none; } .ds-btn-primary:focus-visible { outline: 3px solid #ffd0a4; outline-offset: 3px; }"
+    },
+    {
+      "name": "Dark Field",
+      "kind": "input",
+      "refersTo": "field",
+      "description": "Compact dark field for local project and lecture names.",
+      "html": "<label class=\"ds-field-label\" for=\"ds-project\">新建项目</label><input class=\"ds-field\" id=\"ds-project\" placeholder=\"项目名称\" />",
+      "css": ".ds-field-label { display: block; margin-bottom: 7px; color: rgba(255,248,238,.72); font: 620 .68rem/1.2 -apple-system, BlinkMacSystemFont, \"PingFang SC\", sans-serif; } .ds-field { width: 100%; min-height: 44px; padding: 9px 10px; border: 1px solid rgba(255,250,239,.2); border-radius: 9px; background: rgba(10,14,14,.3); color: #fff; font: 400 .9rem/1.2 -apple-system, BlinkMacSystemFont, \"PingFang SC\", sans-serif; } .ds-field::placeholder { color: rgba(255,244,231,.55); opacity: 1; } .ds-field:focus-visible { outline: 3px solid #ffd0a4; outline-offset: 3px; }"
+    },
+    {
+      "name": "Warm View Tabs",
+      "kind": "chip",
+      "refersTo": "tab-active",
+      "description": "Quiet mode switch between transcript and notes.",
+      "html": "<div class=\"ds-tabs\" role=\"tablist\"><button class=\"ds-tab\" role=\"tab\" aria-selected=\"true\">讲稿</button><button class=\"ds-tab\" role=\"tab\" aria-selected=\"false\">课堂笔记</button></div>",
+      "css": ".ds-tabs { display: flex; gap: 2px; padding: 3px; border-radius: 10px; background: rgba(17,23,22,.36); } .ds-tab { min-height: 38px; padding: 6px 11px; border: 0; border-radius: 8px; background: transparent; color: rgba(255,248,238,.72); font: 620 .74rem/1.2 -apple-system, BlinkMacSystemFont, \"PingFang SC\", sans-serif; cursor: pointer; } .ds-tab[aria-selected=\"true\"] { background: rgba(255,248,236,.17); color: #fff; box-shadow: inset 0 1px rgba(255,255,255,.1); } .ds-tab:focus-visible { outline: 3px solid #ffd0a4; outline-offset: 3px; }"
+    },
+    {
+      "name": "Active Lecture Row",
+      "kind": "nav",
+      "refersTo": "nav-item-active",
+      "description": "Warm translucent selected lecture inside the transparent navigation layer.",
+      "html": "<button class=\"ds-nav-item\" type=\"button\"><span>新课堂</span><small>0 段</small></button>",
+      "css": ".ds-nav-item { width: 100%; min-height: 44px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 10px; border: 1px solid transparent; border-radius: 10px; background: rgba(255,184,108,.19); color: #fffaf3; text-align: left; font: 400 .9rem/1.2 -apple-system, BlinkMacSystemFont, \"PingFang SC\", sans-serif; box-shadow: inset 0 1px rgba(255,255,255,.13), 0 8px 16px rgba(16,20,19,.16); cursor: pointer; transition: background-color 240ms cubic-bezier(.16,1,.3,1), transform 240ms cubic-bezier(.16,1,.3,1); } .ds-nav-item:hover { background: rgba(255,249,238,.1); } .ds-nav-item:active { transform: scale(.985); } .ds-nav-item:focus-visible { outline: 3px solid #ffd0a4; outline-offset: 3px; } .ds-nav-item small { color: rgba(255,248,238,.72); font-size: .65rem; }"
+    },
+    {
+      "name": "Live Listening Line",
+      "kind": "custom",
+      "refersTo": "transcript-bubble",
+      "description": "Focused glass status surface for live English arrival.",
+      "html": "<div class=\"ds-live-line\"><span>已暂停</span><p>实时英文会在这里短暂停留，然后归入讲稿。</p></div>",
+      "css": ".ds-live-line { display: flex; gap: 13px; align-items: baseline; margin-top: 16px; padding: 16px; border: 1px solid rgba(255,250,239,.2); border-radius: 13px; background: rgba(34,37,35,.42); box-shadow: 0 14px 26px rgba(13,18,17,.15), inset 0 1px rgba(255,255,255,.09); backdrop-filter: blur(16px); color: #fffaf3; } .ds-live-line span { color: rgba(255,248,238,.72); font: 700 .68rem/1.2 -apple-system, BlinkMacSystemFont, \"PingFang SC\", sans-serif; } .ds-live-line p { margin: 0; font: 400 1rem/1.65 ui-serif, Georgia, serif; }"
+    },
+    {
+      "name": "Spoken Transcript Bubble",
+      "kind": "custom",
+      "refersTo": "transcript-bubble",
+      "description": "Right-aligned English utterance above the open Chinese response.",
+      "html": "<article class=\"ds-transcript\"><div><small>千问 MT</small><p lang=\"en-GB\">The tissue responds to mechanical signals.</p></div><p lang=\"zh-Hans\">组织会对机械信号作出响应。</p></article>",
+      "css": ".ds-transcript { display: grid; gap: 13px; padding: 31px 5px; border-bottom: 1px solid rgba(255,250,239,.19); color: #fff; font: 470 clamp(1.08rem,1.7vw,1.26rem)/1.78 -apple-system, BlinkMacSystemFont, \"PingFang SC\", sans-serif; } .ds-transcript > div { justify-self: end; width: min(84%,570px); padding: 14px 16px; border: 1px solid rgba(255,250,239,.2); border-radius: 14px 14px 4px 14px; background: rgba(32,35,33,.52); box-shadow: 0 12px 24px rgba(13,18,17,.16), inset 0 1px rgba(255,255,255,.08); backdrop-filter: blur(14px); } .ds-transcript small { color: #ffd7b1; font-size: .66rem; font-weight: 650; } .ds-transcript p { max-width: 72ch; margin: 0; } .ds-transcript > div p { margin-top: 6px; color: #f9eee1; font-family: ui-serif, Georgia, serif; font-size: 1rem; line-height: 1.65; }"
+    },
+    {
+      "name": "Background Stage",
+      "kind": "custom",
+      "refersTo": "background-stage",
+      "description": "Full-bleed authored alpine dawn scene with a readable wash.",
+      "html": "<div class=\"ds-stage\" aria-hidden=\"true\"></div>",
+      "css": ".ds-stage { width: 100%; height: 220px; background: linear-gradient(180deg, rgba(19,30,34,.28), rgba(15,20,21,.42)), url('/backgrounds/alpine-dawn-4k.jpg') center 46% / cover; } @media (prefers-reduced-motion: reduce) { .ds-stage { transform: none; } }"
+    },
+    {
+      "name": "Two-band Composer",
+      "kind": "custom",
+      "refersTo": "composer",
+      "description": "Compact charcoal glass dock with manual input and operating toolbar bands.",
+      "html": "<form class=\"ds-composer\"><textarea aria-label=\"手动添加英文段落\" placeholder=\"听写不可用时，可在此粘贴或输入英文…\"></textarea><button class=\"ds-composer-action\" type=\"submit\">翻译段落</button><div class=\"ds-toolbar\"><button type=\"button\">千问 MT</button><button type=\"button\">开始听写</button></div></form>",
+      "css": ".ds-composer { width: min(708px,calc(100vw - 32px)); padding: 8px; border: 1px solid rgba(255,247,235,.32); border-radius: 15px; background: rgba(34,35,34,.77); box-shadow: 0 22px 45px rgba(11,16,15,.32), 0 7px 14px rgba(11,16,15,.22), inset 0 1px rgba(255,255,255,.11); backdrop-filter: blur(24px) saturate(1.16); } .ds-composer textarea { min-height: 56px; width: 100%; resize: none; padding: 16px 14px; border: 1px solid rgba(255,247,235,.2); border-radius: 10px; background: rgba(12,16,15,.42); color: #fff; font: 400 .9rem/1.4 -apple-system, BlinkMacSystemFont, \"PingFang SC\", sans-serif; } .ds-composer textarea::placeholder { color: rgba(255,244,231,.55); } .ds-composer-action { min-height: 44px; margin-top: 8px; padding: 7px 13px; border: 0; border-radius: 9px; background: #ff7a21; color: #26170d; font: 720 .75rem/1.2 -apple-system, BlinkMacSystemFont, \"PingFang SC\", sans-serif; cursor: pointer; transition: transform 240ms cubic-bezier(.16,1,.3,1); } .ds-composer-action:hover { transform: translateY(-1px); } .ds-composer-action:focus-visible, .ds-toolbar button:focus-visible { outline: 3px solid #ffd0a4; outline-offset: 3px; } .ds-toolbar { display: flex; gap: 4px; margin-top: 7px; } .ds-toolbar button { min-height: 38px; padding: 5px 9px; border: 1px solid rgba(255,247,235,.15); border-radius: 7px; background: rgba(255,247,235,.08); color: #fff5e9; font: 620 .68rem/1.2 -apple-system, BlinkMacSystemFont, \"PingFang SC\", sans-serif; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "Alpine Listening Room",
+    "overview": "Alpine Listening Room is a full-viewport dawn-lake listening stage. The landscape holds attention while language arrives without friction: cool slate and charcoal mountains create the listening room, warm sunrise orange marks the moment of action, and the central Chinese headline gives the empty state a calm human invitation. The authored 4K and 16K alpine-dawn scenes are edge-to-edge visual atmosphere, not ornamental cards.\n\nOperating surfaces stay deliberately scarce. Navigation, drawer, live status, focused content, notes, and the compact composer use charcoal translucency, bright upper edges, inset highlights, blur, and offset depth; the landscape remains unbroken behind them. The authored or uploaded background remains still, while pointer light stays limited to operating surfaces. The self-hosted Noto Sans SC Display face gives Chinese headings a composed editorial silhouette, with system sans for controls and serif English for sound still arriving. Route-specific placement remains in the surface brief; this document captures the reusable listening-room world.",
+    "keyCharacteristics": ["Full-bleed authored alpine dawn landscape with slate/charcoal and sunrise-orange contrast.", "Orange reserved for translation/send action, listening signal, and focused warm details.", "Transparent navigation and charcoal glass only on surfaces users operate.", "Compact two-band composer, still-background scene, and reduced-motion-safe interface behavior."],
+    "rules": [
+      { "name": "The Sunrise Signal Rule", "body": "Orange belongs to an operation or a listening signal; it should never become a broad page wash or compete with the mountain-and-lake image.", "section": "colors" },
+      { "name": "The Quiet Horizon Rule", "body": "Let the largest type carry the empty-state invitation, then step down sharply so controls and landscape can breathe around it.", "section": "typography" },
+      { "name": "The Operating Surface Rule", "body": "Blur and shadow are reserved for places users operate; the landscape itself supplies depth, and the reading content should not become a stack of decorative glass cards.", "section": "elevation" }
+    ],
+    "dos": ["**Do** let the authored alpine dawn landscape remain full-bleed and visually continuous.", "**Do** use Sunrise Orange for action, listening, and focused warm signal only.", "**Do** keep navigation transparent at rest and glass limited to surfaces users operate.", "**Do** use the self-hosted Noto Sans SC Display face for Chinese display headlines and notes.", "**Do** preserve the two-band composer, 44px mobile controls, and the manual translation fallback.", "**Do** keep the authored or uploaded background still and preserve reduced-motion-safe interface transitions.", "**Do** preserve 700px and 380px responsive recomposition without horizontal overflow."],
+    "donts": ["**Don't** cover the landscape with opaque dashboards, card grids, or unrelated decorative glass.", "**Don't** turn sunrise orange into a broad gradient or add competing saturated action colors.", "**Don't** add motion to the authored or uploaded background; interface controls may retain their own state transitions.", "**Don't** reduce Chinese reading clarity to match translucent English source text.", "**Don't** hide project/lecture operations, provider choices, or manual input behind a new interaction model.", "**Don't** add unsupported translation providers beyond 千问 MT and 腾讯云."]
+  }
+}
