@@ -275,6 +275,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
   const pendingScrollBehaviorRef = useRef<ScrollBehavior>("auto");
   const columnScrollFramesRef = useRef<{ source: number | null; translation: number | null }>({ source: null, translation: null });
   const pendingColumnBehaviorRef = useRef<{ source: ScrollBehavior; translation: ScrollBehavior }>({ source: "auto", translation: "auto" });
+  const translationSecondScrollFrameRef = useRef<number | null>(null);
   const columnProgrammaticRef = useRef<{ source: number | null; translation: number | null }>({ source: null, translation: null });
   const columnPointerIntentRef = useRef({ source: false, translation: false });
   const finalSegmentGateRef = useRef(createFinalSegmentGate());
@@ -483,9 +484,20 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
 
   const scheduleColumnScroll = useCallback((column: "source" | "translation", behavior: ScrollBehavior = "auto") => {
     if (behavior === "smooth") pendingColumnBehaviorRef.current[column] = "smooth";
-    if (columnScrollFramesRef.current[column] !== null) return;
+    if (columnScrollFramesRef.current[column] !== null || (column === "translation" && translationSecondScrollFrameRef.current !== null)) return;
     columnScrollFramesRef.current[column] = window.requestAnimationFrame(() => {
       columnScrollFramesRef.current[column] = null;
+      if (column === "translation") {
+        // Let the final/live ref callback and text layout settle before the
+        // translation column measures its target.
+        translationSecondScrollFrameRef.current = window.requestAnimationFrame(() => {
+          translationSecondScrollFrameRef.current = null;
+          const nextBehavior = pendingColumnBehaviorRef.current[column];
+          pendingColumnBehaviorRef.current[column] = "auto";
+          scrollColumnIntoView(column, nextBehavior);
+        });
+        return;
+      }
       const nextBehavior = pendingColumnBehaviorRef.current[column];
       pendingColumnBehaviorRef.current[column] = "auto";
       scrollColumnIntoView(column, nextBehavior);
@@ -512,6 +524,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
       const timer = columnProgrammaticRef.current[column];
       if (timer !== null) window.clearTimeout(timer);
     }
+    if (translationSecondScrollFrameRef.current !== null) window.cancelAnimationFrame(translationSecondScrollFrameRef.current);
   }, []);
 
   useEffect(() => {
@@ -594,6 +607,10 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
     manualScrollRef.current = false;
     userScrollLockRef.current = false;
     columnPointerIntentRef.current = { source: false, translation: false };
+    if (translationSecondScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(translationSecondScrollFrameRef.current);
+      translationSecondScrollFrameRef.current = null;
+    }
     setAutoFollowing(true);
     setColumnFollowing({ source: true, translation: true });
     void refreshProviderStatus();
@@ -754,6 +771,10 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
     const frame = columnScrollFramesRef.current[column];
     if (frame !== null) window.cancelAnimationFrame(frame);
     columnScrollFramesRef.current[column] = null;
+    if (column === "translation" && translationSecondScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(translationSecondScrollFrameRef.current);
+      translationSecondScrollFrameRef.current = null;
+    }
     const timer = columnProgrammaticRef.current[column];
     if (timer !== null) window.clearTimeout(timer);
     columnProgrammaticRef.current[column] = null;

@@ -74,6 +74,8 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(page, /translationColumnRef/);
   assert.match(page, /sourceAnchorRef/);
   assert.match(page, /translationAnchorRef/);
+  assert.match(page, /translationSecondScrollFrameRef/);
+  assert.match(page, /column === "translation"[\s\S]{0,500}translationSecondScrollFrameRef\.current = window\.requestAnimationFrame/);
   assert.match(page, /sourceColumnRef[\s\S]{0,300}onScroll=/);
   assert.match(page, /translationColumnRef[\s\S]{0,300}onScroll=/);
   assert.match(page, /columnPointerIntentRef/);
