@@ -20,7 +20,8 @@ type AuthEnvironment = {
 
 export const SESSION_COOKIE = "lecture_session";
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const PASSWORD_ITERATIONS = 120_000;
+// Cloudflare Workers Web Crypto caps PBKDF2 iteration counts at 100,000.
+const PASSWORD_ITERATIONS = 100_000;
 
 function environment() {
   return env as AuthEnvironment;
