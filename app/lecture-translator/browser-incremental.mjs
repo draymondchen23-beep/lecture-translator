@@ -16,6 +16,18 @@ export function coalescePendingWords(pending, next) {
   return `${pending} ${next}`.trim();
 }
 
+export function contextTail(source, maxChars = 400) {
+  const text = source.trim();
+  if (text.length <= maxChars) return text;
+  const tail = text.slice(-maxChars);
+  const boundary = tail.search(/\s/);
+  return boundary >= 0 ? tail.slice(boundary).trim() : tail;
+}
+
+export function contextForFastRequest(context, requestIndex) {
+  return requestIndex === 0 ? context : "";
+}
+
 export function applyFinalCorrection(accumulated, correction) {
   return correction.trim() || accumulated;
 }

@@ -13,7 +13,7 @@ import { createIncrementalRefiner, validateIncrementalRequest } from "./incremen
 import { recordUsage, userFromRequest, withinMonthlyQuota } from "../../auth";
 
 type QwenResponse = { choices?: Array<{ message?: { content?: unknown } }>; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } };
-type TranslateRequest = { text?: unknown; terminology?: unknown; lectureId?: unknown; sessionId?: unknown; segmentId?: unknown; quality?: unknown };
+type TranslateRequest = { text?: unknown; context?: unknown; terminology?: unknown; lectureId?: unknown; sessionId?: unknown; segmentId?: unknown; quality?: unknown };
 
 const DEFAULT_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 const refiner = createIncrementalRefiner();
@@ -40,13 +40,14 @@ async function environment() {
   return env as Environment;
 }
 
-function terminologyPrompt(value: unknown) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
-  const lines = Object.entries(value as Record<string, unknown>)
+function translationInstructions(context: string, terminology: unknown) {
+  const contextInstruction = context ? `\nPrevious finalized block context (use only for continuity; translate only the current input):\n${context}` : "";
+  if (!terminology || typeof terminology !== "object" || Array.isArray(terminology)) return contextInstruction;
+  const lines = Object.entries(terminology as Record<string, unknown>)
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
     .slice(0, 100)
     .map(([english, chinese]) => `${english} => ${chinese}`);
-  return lines.length ? `\nUse these established terms consistently:\n${lines.join("\n")}` : "";
+  return `${contextInstruction}${lines.length ? `\nUse these established terms consistently:\n${lines.join("\n")}` : ""}`;
 }
 
 export async function GET() {
@@ -83,8 +84,8 @@ export async function POST(request: Request) {
         headers: { Authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({
           model,
-          messages: [{ role: "user", content: `${value.text}${terminologyPrompt(body.terminology)}` }],
-          translation_options: { source_lang: "English", target_lang: "Chinese", domains: "University lecture, academic English. Preserve formulas, numbers, units, names and established English abbreviations. On first use, format uncertain academic terms as 中文（English Term）." },
+          messages: [{ role: "user", content: value.text }],
+          translation_options: { source_lang: "English", target_lang: "Chinese", domains: `University lecture, academic English. Translate only the current input. Use any supplied previous-block context only to resolve continuity, pronouns and terminology. Preserve formulas, numbers, units, names and established English abbreviations. On first use, format uncertain academic terms as 中文（English Term）.${translationInstructions(value.context, body.terminology)}` },
         }),
         signal: AbortSignal.timeout(20_000),
       });

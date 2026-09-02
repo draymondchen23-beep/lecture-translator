@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { applyFinalCorrection, bestTranscript, coalescePendingWords, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, nextFallbackRequestKind, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, splitWords, stableWords } from "./browser-incremental.mjs";
+import { applyFinalCorrection, bestTranscript, coalescePendingWords, contextForFastRequest, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, nextFallbackRequestKind, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, splitWords, stableWords } from "./browser-incremental.mjs";
 import type { LectureState, ProviderPreference, RealtimeServerEvent } from "./types";
 
 type Options = {
@@ -44,6 +44,9 @@ type FallbackLiveBlock = {
   stableWords: string[];
   requestIndex: number;
   pendingSource: string;
+  context: string;
+  finalContext: string;
+  contextUpdated: boolean;
   finalSource: string | null;
   finalRequested: boolean;
   finalCorrectionQueued: boolean;
@@ -87,6 +90,7 @@ export function useRealtimeLecture(options: Options) {
   const fallbackSequenceRef = useRef(0);
   const fallbackStartedAtRef = useRef(0);
   const fallbackSessionRef = useRef("");
+  const fallbackContextRef = useRef("");
   const fallbackFinalIndexesRef = useRef(new Set<number>());
   const fallbackQueueRef = useRef<Promise<void>>(Promise.resolve());
   const fallbackCorrectionQueueRef = useRef<Promise<void>>(Promise.resolve());
@@ -223,11 +227,11 @@ export function useRealtimeLecture(options: Options) {
     while (fallbackWorkRef.current.size) await Promise.all([...fallbackWorkRef.current]);
   }, []);
 
-  const translateFallback = useCallback(async (sessionId: string, text: string, segmentId: string, quality: "fast" | "accurate") => {
+  const translateFallback = useCallback(async (sessionId: string, text: string, segmentId: string, quality: "fast" | "accurate", context: string) => {
     const response = await fetch("/api/translate", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ lectureId: sessionId, sessionId, segmentId, text, quality, terminology: optionsRef.current.terminology }),
+      body: JSON.stringify({ lectureId: sessionId, sessionId, segmentId, text, context, quality, terminology: optionsRef.current.terminology }),
     });
     const result = await response.json().catch(() => ({})) as { translation?: unknown; error?: unknown };
     if (!response.ok || typeof result.translation !== "string" || !result.translation.trim()) {
@@ -243,7 +247,8 @@ export function useRealtimeLecture(options: Options) {
       if (epoch !== fallbackEpochRef.current || !block.finalSource) return;
       try {
         setState("PROCESSING");
-        const translated = await translateFallback(sessionId, block.finalSource, fallbackFinalCorrectionSegmentId(sessionId, block.sequence), "accurate");
+        block.context = block.finalContext;
+        const translated = await translateFallback(sessionId, block.finalSource, fallbackFinalCorrectionSegmentId(sessionId, block.sequence), "accurate", block.context);
         if (epoch !== fallbackEpochRef.current) return;
         block.translatedText = applyFinalCorrection(block.translatedText, translated);
         emit({ type: "translation.partial", text: block.translatedText, sequence: block.sequence, startedAt: block.startedAt });
@@ -278,7 +283,8 @@ export function useRealtimeLecture(options: Options) {
         block.pendingSource = "";
         try {
           setState("PROCESSING");
-          const translated = await translateFallback(sessionId, sourceText, fallbackRequestSegmentId(sessionId, block.sequence, block.requestIndex++), "fast");
+          if (!contextForFastRequest(block.context, block.requestIndex)) block.context = "";
+          const translated = await translateFallback(sessionId, sourceText, fallbackRequestSegmentId(sessionId, block.sequence, block.requestIndex++), "fast", block.context);
           if (epoch !== fallbackEpochRef.current) return;
           block.translatedText = appendTranslation(block.translatedText, translated);
           emit({ type: "translation.partial", text: block.translatedText, sequence: block.sequence, startedAt: block.startedAt });
@@ -304,6 +310,10 @@ export function useRealtimeLecture(options: Options) {
       block.finalRequested = true;
       block.finalSource = block.sourceText;
       block.pendingSource = "";
+      if (!block.contextUpdated) {
+        fallbackContextRef.current = contextTail(block.finalSource);
+        block.contextUpdated = true;
+      }
       queueFallbackTranslation(block);
     }
     fallbackStartedAtRef.current = Date.now();
@@ -323,6 +333,7 @@ export function useRealtimeLecture(options: Options) {
     fallbackSequenceRef.current = 0;
     fallbackStartedAtRef.current = Date.now();
     fallbackSessionRef.current = crypto.randomUUID();
+    fallbackContextRef.current = "";
     fallbackFinalIndexesRef.current = new Set();
     fallbackQueueRef.current = Promise.resolve();
     fallbackCorrectionQueueRef.current = Promise.resolve();
@@ -348,13 +359,17 @@ export function useRealtimeLecture(options: Options) {
           const block = fallbackBlockRef.current || {
             sequence: fallbackSequenceRef.current++, startedAt: fallbackStartedAtRef.current || Date.now(), sourceText: text,
             committedSource: "", translatedText: "", previousWords: [], stableWords: [], requestIndex: 0,
-            pendingSource: "", finalSource: null, finalRequested: false, finalCorrectionQueued: false, workerQueued: false,
+            pendingSource: "", context: fallbackContextRef.current, finalContext: fallbackContextRef.current, contextUpdated: false, finalSource: null, finalRequested: false, finalCorrectionQueued: false, workerQueued: false,
           };
           if (block.finalRequested) continue;
           block.sourceText = text;
           block.finalRequested = true;
           block.finalSource = text;
           block.pendingSource = "";
+          if (!block.contextUpdated) {
+            fallbackContextRef.current = contextTail(text);
+            block.contextUpdated = true;
+          }
           emit({ type: "source.partial", text, sequence: block.sequence, startedAt: block.startedAt });
           queueFallbackTranslation(block);
           fallbackBlockRef.current = null;
@@ -368,7 +383,7 @@ export function useRealtimeLecture(options: Options) {
         const block = fallbackBlockRef.current || {
           sequence: fallbackSequenceRef.current++, startedAt: fallbackStartedAtRef.current, sourceText: "",
           committedSource: "", translatedText: "", previousWords: [], stableWords: [], requestIndex: 0,
-          pendingSource: "", finalSource: null, finalRequested: false, finalCorrectionQueued: false, workerQueued: false,
+          pendingSource: "", context: fallbackContextRef.current, finalContext: fallbackContextRef.current, contextUpdated: false, finalSource: null, finalRequested: false, finalCorrectionQueued: false, workerQueued: false,
         };
         const interimWords = splitWords(interim);
         block.stableWords = stableWords(block.previousWords, interimWords, block.stableWords);
@@ -533,6 +548,7 @@ export function useRealtimeLecture(options: Options) {
     speechRef.current = null;
     await Promise.race([waitForFallbackWork(), new Promise<void>((resolve) => window.setTimeout(resolve, 20_000))]);
     fallbackActiveRef.current = false;
+    fallbackContextRef.current = "";
     fallbackEpochRef.current += 1;
     if (socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: "session.end" }));
@@ -570,6 +586,7 @@ export function useRealtimeLecture(options: Options) {
   useEffect(() => () => {
     intentionalCloseRef.current = true;
     fallbackActiveRef.current = false;
+    fallbackContextRef.current = "";
     fallbackEpochRef.current += 1;
     clearFallbackBlock();
     if (fallbackRestartRef.current !== null) window.clearTimeout(fallbackRestartRef.current);

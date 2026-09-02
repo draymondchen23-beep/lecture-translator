@@ -50,9 +50,12 @@ test("duplicate segment uses memory cache and never repeats external refinement"
 
 test("contract rejects transcript payloads and unsafe segment limits", () => {
   assert.equal(validateIncrementalRequest({ lectureId: "l", sessionId: "l", segmentId: "s", text: "x", transcript: "old history" }).status, 400);
+  assert.equal(validateIncrementalRequest({ lectureId: "l", sessionId: "l", segmentId: "s", text: "x", context: "x".repeat(401) }).status, 400);
+  assert.equal(validateIncrementalRequest({ lectureId: "l", sessionId: "l", segmentId: "s", text: "x", context: ["history"] }).status, 400);
   assert.equal(validateIncrementalRequest({ lectureId: "l", sessionId: "l", segmentId: "s", text: "x".repeat(20_001) }).status, 413);
   assert.equal(validateIncrementalRequest({ lectureId: "l", sessionId: "l", segmentId: "s", text: "ok" }).value.warning, false);
   assert.equal(validateIncrementalRequest({ lectureId: "l", sessionId: "l", segmentId: "s", text: "ok", quality: "accurate" }).value.quality, "accurate");
+  assert.equal(validateIncrementalRequest({ lectureId: "l", sessionId: "l", segmentId: "s", text: "abcd", context: "efgh" }).value.tokenEstimate, 2);
   assert.equal(validateIncrementalRequest({ lectureId: "l", sessionId: "l", segmentId: "s", text: "ok", quality: "slow" }).status, 400);
   assert.ok("value" in validateIncrementalRequest({ lectureId: "lecture", sessionId: "session", segmentId: "s", text: "ok" }));
 });

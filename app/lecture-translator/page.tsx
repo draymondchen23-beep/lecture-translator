@@ -23,6 +23,8 @@ import { useRealtimeLecture } from "./use-realtime-lecture";
 import { reducePartialEvent } from "./partial-events.mjs";
 import { createFinalSegmentGate, shouldRefineFinal } from "./incremental-refinement.mjs";
 import { AuthPanel, type SignedInUser } from "./auth-panel";
+import { reconcileDisplayedPrefix, shouldRecenter } from "./live-display.mjs";
+import { useProgressiveText } from "./use-progressive-text";
 
 type Tab = "transcript" | "notes" | "terms" | "bookmarks";
 type AssistAction = "explain" | "simplify" | "example" | "term";
@@ -197,17 +199,24 @@ function Icon({ name }: { name: "menu" | "plus" | "search" | "settings" | "copy"
 }
 
 const TranscriptRow = memo(function TranscriptRow({
-  segment, query, editing, onBookmark, onAsk, onEdit, onSaveEdit,
+  segment, query, editing, translationDisplay, animateTranslation, onTranslationDone, scrollRef, onBookmark, onAsk, onEdit, onSaveEdit,
 }: {
   segment: TranscriptSegment; query: string; editing: boolean;
+  translationDisplay?: string; animateTranslation?: boolean; onTranslationDone?(): void;
+  scrollRef?: (element: HTMLElement | null) => void;
   onBookmark(id: string): void; onAsk(segment: TranscriptSegment): void; onEdit(id: string): void;
   onSaveEdit(id: string, source: string, translation: string): void;
 }) {
   const [source, setSource] = useState(segment.sourceText);
   const [translation, setTranslation] = useState(segment.translatedText);
+  const progressiveTranslation = useProgressiveText(segment.translatedText, {
+    enabled: animateTranslation,
+    initialText: translationDisplay ?? segment.translatedText,
+    onComplete: onTranslationDone,
+  });
   useEffect(() => { setSource(segment.sourceText); setTranslation(segment.translatedText); }, [segment.sourceText, segment.translatedText]);
   const highlighted = query && `${segment.sourceText} ${segment.translatedText}`.toLowerCase().includes(query.toLowerCase());
-  return <article className={`${styles.segment} ${highlighted ? styles.searchMatch : ""}`} id={`segment-${segment.id}`}>
+  return <article ref={scrollRef} className={`${styles.segment} ${highlighted ? styles.searchMatch : ""}`} id={`segment-${segment.id}`}>
     <button className={styles.timestamp} onClick={() => navigator.clipboard.writeText(formatTime(segment.startTime))}>{formatTime(segment.startTime)}</button>
     <div className={styles.segmentBody}>
       {editing ? <>
@@ -217,7 +226,7 @@ const TranscriptRow = memo(function TranscriptRow({
       </> : <>
         <div className={styles.bilingualColumns}>
           <div><span className={styles.languageLabel}>English</span><p className={styles.sourceText}>{segment.sourceText}</p></div>
-          <div><span className={styles.languageLabel}>中文</span><p className={styles.translationText}>{segment.translatedText || <span className={styles.muted}>Translation pending…</span>}</p></div>
+          <div><span className={styles.languageLabel}>中文</span><p className={styles.translationText}>{progressiveTranslation.displayed || <span className={styles.muted}>Translation pending…</span>}</p></div>
         </div>
       </>}
       <span className={styles.providerTag}>{segment.provider === "qwen" ? "Qwen" : "Tencent"}{segment.refinementState === "refined" ? " · MT refined" : ""}</span>
@@ -236,6 +245,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
   const [hydrated, setHydrated] = useState(false);
   const [tab, setTab] = useState<Tab>("transcript");
   const [partial, setPartial] = useState({ source: "", translation: "", sequence: 0 });
+  const [finalVisual, setFinalVisual] = useState<{ segmentId: string; initialTranslation: string } | null>(null);
   const [query, setQuery] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -256,12 +266,23 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
   const activeIdRef = useRef(workspace.activeSessionId);
   const workspaceRef = useRef(workspace);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
-  const liveRef = useRef<HTMLDivElement | null>(null);
+  const liveRef = useRef<HTMLElement | null>(null);
+  const partialRef = useRef(partial);
+  const displayedTranslationRef = useRef("");
+  const programmaticScrollRef = useRef<number | null>(null);
+  const manualScrollRef = useRef(false);
+  const userScrollLockRef = useRef(false);
+  const scrollFrameRef = useRef<number | null>(null);
+  const pendingScrollBehaviorRef = useRef<ScrollBehavior>("auto");
   const finalSegmentGateRef = useRef(createFinalSegmentGate());
 
   const activeSession = workspace.sessions.find((session) => session.id === workspace.activeSessionId) || workspace.sessions[0];
   activeIdRef.current = activeSession.id;
   workspaceRef.current = workspace;
+  partialRef.current = partial;
+
+  const liveTranslation = useProgressiveText(partial.translation);
+  displayedTranslationRef.current = liveTranslation.displayed;
 
   const updateSession = useCallback((sessionId: string, updater: (session: LectureSession) => LectureSession) => {
     setWorkspace((current) => ({ ...current, sessions: current.sessions.map((session) => session.id === sessionId ? updater(session) : session) }));
@@ -308,6 +329,9 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
         provider: event.provider, speaker: "Lecturer", confidence: event.confidence ?? null, isFinal: true,
         createdAt: new Date().toISOString(), bookmarked: false, refinementState: event.refined ? "refined" : "idle",
       };
+      const previousPartial = partialRef.current;
+      const continuation = reconcileDisplayedPrefix(previousPartial.translation, displayedTranslationRef.current, event.translatedText);
+      setFinalVisual({ segmentId: segment.id, initialTranslation: continuation });
       updateSession(sessionId, (current) => current.segments.some((item) => item.id === segment.id) ? current : { ...current, segments: [...current.segments, segment] });
       setPartial((current) => reducePartialEvent(current, event));
       if (shouldRefineFinal(event) && finalSegmentGateRef.current.claim(sessionId, segment.id)) void refineSegment(sessionId, segment);
@@ -413,10 +437,45 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
     ? Math.max(activeSession.duration, Math.floor((Date.now() - new Date(activeSession.startedAt).getTime()) / 1_000))
     : activeSession.duration;
 
+  const scrollLiveIntoView = useCallback((behavior: ScrollBehavior = "smooth") => {
+    const target = liveRef.current;
+    const container = transcriptRef.current;
+    if (!target || !container || !shouldRecenter(container.getBoundingClientRect(), target.getBoundingClientRect())) return;
+    const previousTimer = programmaticScrollRef.current;
+    if (previousTimer !== null) window.clearTimeout(previousTimer);
+    programmaticScrollRef.current = window.setTimeout(() => { programmaticScrollRef.current = null; }, behavior === "smooth" ? 700 : 80);
+    // The content surface has scroll-behavior:smooth; instant bypasses that
+    // transition for height changes caused by individual displayed characters.
+    target.scrollIntoView({ behavior: behavior === "auto" ? "instant" : behavior, block: "center" });
+  }, []);
+
+  const scheduleLiveScroll = useCallback((behavior: ScrollBehavior = "auto") => {
+    if (behavior === "smooth") pendingScrollBehaviorRef.current = "smooth";
+    if (scrollFrameRef.current !== null) return;
+    scrollFrameRef.current = window.requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      const nextBehavior = pendingScrollBehaviorRef.current;
+      pendingScrollBehaviorRef.current = "auto";
+      scrollLiveIntoView(nextBehavior);
+    });
+  }, [scrollLiveIntoView]);
+
+  useEffect(() => () => {
+    if (scrollFrameRef.current !== null) window.cancelAnimationFrame(scrollFrameRef.current);
+    if (programmaticScrollRef.current !== null) window.clearTimeout(programmaticScrollRef.current);
+  }, []);
+
   useEffect(() => {
     if (!workspace.settings.autoScroll || !autoFollowing || tab !== "transcript") return;
-    liveRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [activeSession.segments.length, autoFollowing, partial.source, partial.translation, tab, workspace.settings.autoScroll]);
+    scheduleLiveScroll("smooth");
+  }, [activeSession.segments.length, autoFollowing, partial.source, partial.translation, tab, workspace.settings.autoScroll, finalVisual, scheduleLiveScroll]);
+
+  useEffect(() => {
+    if (!workspace.settings.autoScroll || !autoFollowing || tab !== "transcript" || !liveRef.current || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => scheduleLiveScroll("auto"));
+    observer.observe(liveRef.current);
+    return () => observer.disconnect();
+  }, [autoFollowing, finalVisual, partial.source, partial.translation, scheduleLiveScroll, tab, workspace.settings.autoScroll]);
 
   useEffect(() => {
     if (!notice) return;
@@ -485,6 +544,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
     const session = newSession();
     setWorkspace((current) => ({ ...current, sessions: [session, ...current.sessions], activeSessionId: session.id }));
     setPartial({ source: "", translation: "", sequence: 0 });
+    setFinalVisual(null);
     setTab("transcript");
     setSidebarOpen(false);
   };
@@ -492,6 +552,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
   const chooseSession = (sessionId: string) => {
     if (isRecording && sessionId !== activeSession.id) { setNotice("End the current lecture before opening another one."); return; }
     setWorkspace((current) => ({ ...current, activeSessionId: sessionId }));
+    setFinalVisual(null);
     setTab("transcript");
     setSidebarOpen(false);
   };
@@ -526,6 +587,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
     void deleteLectureData(sessionId).catch(() => undefined);
     setDeleteTarget(null);
     setPartial({ source: "", translation: "", sequence: 0 });
+    setFinalVisual(null);
     setTab("transcript");
   };
 
@@ -585,6 +647,9 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
     return `${segment.sourceText} ${segment.translatedText}`.toLowerCase().includes(query.toLowerCase());
   }), [activeSession.segments, query, tab]);
   const visibleSegments = showOlder || filteredSegments.length <= 500 ? filteredSegments : filteredSegments.slice(-500);
+  const finishFinalVisual = useCallback((segmentId: string) => {
+    setFinalVisual((current) => current?.segmentId === segmentId ? null : current);
+  }, []);
 
   return <div className={`${styles.app} ${sidebarCollapsed ? styles.appSidebarCollapsed : ""}`}>
     <iframe className={styles.brandOrbsBackground} src="/backgrounds/brand-orbs-codex.html" title="" aria-hidden="true" tabIndex={-1} />
@@ -629,23 +694,59 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
         {(["transcript", "notes", "terms", "bookmarks"] as Tab[]).map((item) => <button key={item} role="tab" aria-selected={tab === item} onClick={() => setTab(item)}>{item === "terms" ? "Key Terms" : item[0].toUpperCase() + item.slice(1)}{item === "bookmarks" && activeSession.segments.some((segment) => segment.bookmarked) ? <b>{activeSession.segments.filter((segment) => segment.bookmarked).length}</b> : null}</button>)}
       </div>
 
-      <div className={styles.content} ref={transcriptRef} onScroll={(event) => {
+      <div className={styles.content} ref={transcriptRef} onWheel={() => {
+        manualScrollRef.current = true;
+        userScrollLockRef.current = true;
+        if (programmaticScrollRef.current !== null) window.clearTimeout(programmaticScrollRef.current);
+        programmaticScrollRef.current = null;
+        setAutoFollowing(false);
+      }} onTouchMove={() => {
+        manualScrollRef.current = true;
+        userScrollLockRef.current = true;
+        if (programmaticScrollRef.current !== null) window.clearTimeout(programmaticScrollRef.current);
+        programmaticScrollRef.current = null;
+        setAutoFollowing(false);
+      }} onKeyDown={(event) => {
+        if (["ArrowUp", "PageUp", "Home"].includes(event.key)) {
+          manualScrollRef.current = true;
+          userScrollLockRef.current = true;
+          if (programmaticScrollRef.current !== null) window.clearTimeout(programmaticScrollRef.current);
+          programmaticScrollRef.current = null;
+          setAutoFollowing(false);
+        }
+      }} onScroll={(event) => {
         const element = event.currentTarget;
+        if (programmaticScrollRef.current !== null && !manualScrollRef.current) return;
         const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < 120;
-        if (!nearBottom) setAutoFollowing(false);
+        if (userScrollLockRef.current) setAutoFollowing(false);
+        else if (!nearBottom) setAutoFollowing(false);
         else if (nearBottom) setAutoFollowing(true);
+        manualScrollRef.current = false;
       }}>
         {tab === "transcript" || tab === "bookmarks" ? <div className={styles.transcript}>
           {!activeSession.segments.length && !partial.source ? <div className={styles.emptyState}><h2>Start a lecture</h2><p>Live transcription, translation and AI notes.</p>{providerStatusLoaded && !providerStatus.qwen && !providerStatus.tencent ? <div className={styles.setupNotice}><strong>Translation setup required</strong><span>Qwen and Tencent are not configured on this server.</span><button onClick={() => setSettingsOpen(true)}>View API status</button></div> : null}<button onClick={startLecture}><Icon name="mic" /> Start lecture</button></div> : null}
           {!showOlder && filteredSegments.length > 500 ? <button className={styles.loadOlder} onClick={() => setShowOlder(true)}>Show {filteredSegments.length - 500} older segments</button> : null}
           {(visibleSegments.length || partial.source || partial.translation || tab === "bookmarks") ? <div className={styles.transcriptStream}>
-              {visibleSegments.map((segment) => <TranscriptRow key={segment.id} segment={segment} query={query} editing={editingId === segment.id} onBookmark={bookmark} onAsk={askAI} onEdit={setEditingId} onSaveEdit={saveEdit} />)}
+              {visibleSegments.map((segment) => <TranscriptRow
+                key={segment.id}
+                segment={segment}
+                query={query}
+                editing={editingId === segment.id}
+                translationDisplay={finalVisual?.segmentId === segment.id ? finalVisual.initialTranslation : undefined}
+                animateTranslation={finalVisual?.segmentId === segment.id}
+                onTranslationDone={finalVisual?.segmentId === segment.id ? () => finishFinalVisual(segment.id) : undefined}
+                scrollRef={finalVisual?.segmentId === segment.id ? (element) => { liveRef.current = element; } : undefined}
+                onBookmark={bookmark}
+                onAsk={askAI}
+                onEdit={setEditingId}
+                onSaveEdit={saveEdit}
+              />)}
               {tab === "bookmarks" && !filteredSegments.length ? <div className={styles.emptySmall}><Icon name="bookmark" /><p>No bookmarks yet.</p></div> : null}
-              {tab === "transcript" && (partial.source || partial.translation) ? <div ref={liveRef} className={styles.liveSegment}>
+              {tab === "transcript" && (partial.source || partial.translation) ? <div ref={(element) => { liveRef.current = element; }} className={styles.liveSegment}>
                 <span className={styles.liveLabel}>Live</span>
                 <div className={styles.liveBilingual}>
                   <div><span className={styles.languageLabel}>English</span><p className={styles.sourceText}>{partial.source}<i className={styles.cursor} /></p></div>
-                  <div><span className={styles.languageLabel}>中文</span><p className={styles.translationText}>{partial.translation || "Translating…"}</p></div>
+                  <div><span className={styles.languageLabel}>中文</span><p className={styles.translationText}>{liveTranslation.displayed || "Translating…"}</p></div>
                 </div>
               </div> : null}
             </div> : null}
@@ -657,7 +758,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
         {tab === "terms" ? <TermsView notes={activeSession.notes} terminology={activeSession.terminology} /> : null}
       </div>
 
-      {!autoFollowing && tab === "transcript" ? <button className={styles.jumpLive} onClick={() => { setAutoFollowing(true); liveRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }); }}>↓ Jump to live</button> : null}
+      {!autoFollowing && tab === "transcript" ? <button className={styles.jumpLive} onClick={() => { manualScrollRef.current = false; userScrollLockRef.current = false; setAutoFollowing(true); scrollLiveIntoView("smooth"); }}>↓ Jump to live</button> : null}
       {notice ? <div className={styles.toast} role="status">{notice}</div> : null}
 
       <div className={styles.controlDock} onPointerMove={(event) => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyFinalCorrection, bestTranscript, coalescePendingWords, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, nextFallbackRequestKind, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, stableWords, uncommittedTail } from "../app/lecture-translator/browser-incremental.mjs";
+import { applyFinalCorrection, bestTranscript, coalescePendingWords, contextForFastRequest, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, nextFallbackRequestKind, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, stableWords, uncommittedTail } from "../app/lecture-translator/browser-incremental.mjs";
 
 test("stable prefixes yield a new interim chunk without a timer", () => {
   let stable = [];
@@ -23,6 +23,18 @@ test("pending stable words coalesce without repeating already committed words", 
   const first = uncommittedTail(stable.join(" "), committed);
   assert.equal(first, "brown");
   assert.equal(coalescePendingWords(first, uncommittedTail("The quick brown fox", "The quick brown")), "brown fox");
+});
+
+test("context is limited to the preceding finalized block tail", () => {
+  const source = `Earlier sentence ${"x".repeat(450)} final term`;
+  const context = contextTail(source);
+  assert.ok(context.length <= 400);
+  assert.ok(context.endsWith("final term"));
+});
+
+test("fast context is sent only with a block's first request", () => {
+  assert.equal(contextForFastRequest("previous block", 0), "previous block");
+  assert.equal(contextForFastRequest("previous block", 1), "");
 });
 
 test("final correction replaces interim Chinese and chooses the best browser alternative", () => {
