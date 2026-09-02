@@ -43,7 +43,6 @@ type FallbackLiveBlock = {
   previousWords: string[];
   stableWords: string[];
   requestIndex: number;
-  timer: number | null;
   pendingSource: string;
   finalSource: string | null;
   finalRequested: boolean;
@@ -55,8 +54,6 @@ const SAMPLE_RATE = 16_000;
 const CHUNK_SAMPLES = 1_600;
 const MAX_QUEUED_CHUNKS = 300;
 const DEBUG = process.env.NODE_ENV !== "production";
-const FALLBACK_TRANSLATION_INTERVAL = 250;
-
 function appendTranslation(previous: string, next: string) {
   return `${previous}${previous && next ? " " : ""}${next}`;
 }
@@ -214,8 +211,6 @@ export function useRealtimeLecture(options: Options) {
   }, []);
 
   const clearFallbackBlock = useCallback(() => {
-    const block = fallbackBlockRef.current;
-    if (block && block.timer !== null) window.clearTimeout(block.timer);
     fallbackBlockRef.current = null;
   }, []);
 
@@ -304,7 +299,6 @@ export function useRealtimeLecture(options: Options) {
   const flushFallbackBlock = useCallback(() => {
     const block = fallbackBlockRef.current;
     if (!block) return;
-    if (block.timer !== null) window.clearTimeout(block.timer);
     fallbackBlockRef.current = null;
     if (block.sourceText && !block.finalRequested) {
       block.finalRequested = true;
@@ -353,10 +347,9 @@ export function useRealtimeLecture(options: Options) {
           fallbackFinalIndexesRef.current.add(index);
           const block = fallbackBlockRef.current || {
             sequence: fallbackSequenceRef.current++, startedAt: fallbackStartedAtRef.current || Date.now(), sourceText: text,
-            committedSource: "", translatedText: "", previousWords: [], stableWords: [], requestIndex: 0, timer: null,
+            committedSource: "", translatedText: "", previousWords: [], stableWords: [], requestIndex: 0,
             pendingSource: "", finalSource: null, finalRequested: false, finalCorrectionQueued: false, workerQueued: false,
           };
-          if (block.timer !== null) window.clearTimeout(block.timer);
           if (block.finalRequested) continue;
           block.sourceText = text;
           block.finalRequested = true;
@@ -374,7 +367,7 @@ export function useRealtimeLecture(options: Options) {
         if (!fallbackStartedAtRef.current) fallbackStartedAtRef.current = Date.now();
         const block = fallbackBlockRef.current || {
           sequence: fallbackSequenceRef.current++, startedAt: fallbackStartedAtRef.current, sourceText: "",
-          committedSource: "", translatedText: "", previousWords: [], stableWords: [], requestIndex: 0, timer: null,
+          committedSource: "", translatedText: "", previousWords: [], stableWords: [], requestIndex: 0,
           pendingSource: "", finalSource: null, finalRequested: false, finalCorrectionQueued: false, workerQueued: false,
         };
         const interimWords = splitWords(interim);
@@ -383,16 +376,13 @@ export function useRealtimeLecture(options: Options) {
         block.sourceText = interim;
         fallbackBlockRef.current = block;
         emit({ type: "source.partial", text: interim, sequence: block.sequence, startedAt: block.startedAt });
-        if (block.timer === null) block.timer = window.setTimeout(() => {
-          block.timer = null;
-          if (fallbackBlockRef.current !== block || pausedRef.current || !fallbackActiveRef.current) return;
-          const committedCount = splitWords(block.committedSource).length;
-          const chunk = block.stableWords.slice(committedCount).join(" ");
-          if (!chunk) return;
+        const committedCount = splitWords(block.committedSource).length;
+        const chunk = block.stableWords.slice(committedCount).join(" ");
+        if (chunk) {
           block.committedSource = `${block.committedSource} ${chunk}`.trim();
           block.pendingSource = coalescePendingWords(block.pendingSource, chunk);
           queueFallbackTranslation(block);
-        }, FALLBACK_TRANSLATION_INTERVAL);
+        }
         setState("SPEAKING");
       }
     };
@@ -468,15 +458,15 @@ export function useRealtimeLecture(options: Options) {
   }, [sendChunk]);
 
   const start = useCallback(async () => {
-    if (streamRef.current) return;
+    if (streamRef.current || fallbackActiveRef.current) return;
     intentionalCloseRef.current = false;
     pausedRef.current = false;
     queuedRef.current = [];
     setMessage("");
     setState("CONNECTING");
     try {
+      if (shouldStartBrowserFallbackImmediately(window.location.hostname) && !optionsRef.current.saveAudio && startBrowserFallback()) return;
       await startMicrophone();
-      if (shouldStartBrowserFallbackImmediately(window.location.hostname) && startBrowserFallback()) return;
       try {
         await connect();
       } catch (error) {

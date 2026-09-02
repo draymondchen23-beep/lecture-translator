@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { applyFinalCorrection, bestTranscript, coalescePendingWords, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, nextFallbackRequestKind, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, stableWords, uncommittedTail } from "../app/lecture-translator/browser-incremental.mjs";
 
-test("stable prefixes yield only new interim chunks", () => {
+test("stable prefixes yield a new interim chunk without a timer", () => {
   let stable = [];
   stable = stableWords(["The", "quick"], ["The", "quick", "brown"], stable);
   assert.deepEqual(stable, ["The", "quick"]);

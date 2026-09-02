@@ -437,17 +437,12 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
   }, [historyMenuId]);
 
   const startLecture = async () => {
-    const status = await refreshProviderStatus();
-    if (!status) {
-      setNotice("The translation server is offline. Start the local service and try again.");
-      return;
-    }
-    const configured = status.qwen;
-    if (!configured) {
+    if (providerStatusLoaded && !providerStatus.qwen) {
       setNotice("Qwen realtime translation is not configured on the server.");
       setSettingsOpen(true);
       return;
     }
+    void refreshProviderStatus();
     const startedAt = new Date().toISOString();
     updateSession(activeSession.id, (session) => ({ ...session, duration: 0, startedAt, endedAt: null, status: "recording", provider: "qwen" }));
     setTab("transcript");

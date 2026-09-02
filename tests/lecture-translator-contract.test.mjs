@@ -20,7 +20,8 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(hook, /navigator\.mediaDevices\.getUserMedia/);
   assert.match(hook, /AudioWorkletNode/);
   assert.match(hook, /CHUNK_SAMPLES = 1_600/);
-  assert.match(hook, /FALLBACK_TRANSLATION_INTERVAL = 250/);
+  assert.doesNotMatch(hook, /FALLBACK_TRANSLATION_INTERVAL/);
+  assert.doesNotMatch(hook, /timer: number/);
   assert.match(hook, /MAX_QUEUED_CHUNKS = 300/);
   assert.match(hook, /webkitSpeechRecognition/);
   assert.match(hook, /Realtime connection closed before opening/);
@@ -34,6 +35,8 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(hook, /url\.searchParams\.set\("provider", "qwen"\)/);
   assert.match(hook, /hostname}:3002/);
   assert.match(hook, /processorOptions: \{ targetSampleRate: SAMPLE_RATE, chunkSamples: CHUNK_SAMPLES \}/);
+  const publicFallback = hook.indexOf("shouldStartBrowserFallbackImmediately(window.location.hostname) && !optionsRef.current.saveAudio && startBrowserFallback()");
+  assert.ok(publicFallback >= 0 && publicFallback < hook.indexOf("await startMicrophone();", publicFallback));
   assert.match(worklet, /registerProcessor\("pcm-capture"/);
   assert.match(worklet, /this\.step = sampleRate \/ this\.targetSampleRate/);
   assert.match(relay, /qwen3\.5-livetranslate-flash-realtime/);
@@ -82,4 +85,6 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(page, /Delete/);
   assert.match(page, /Qwen realtime translation is not configured/);
   assert.match(page, /setSettingsOpen\(true\)/);
+  assert.match(page, /if \(providerStatusLoaded && !providerStatus\.qwen\)/);
+  assert.doesNotMatch(page, /const startLecture = async \(\) => \{\s*const status = await refreshProviderStatus\(\)/);
 });
