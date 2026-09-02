@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { fallbackRequestSegmentId, stableWords, uncommittedTail } from "../app/lecture-translator/browser-incremental.mjs";
+import { applyFinalCorrection, bestTranscript, coalescePendingWords, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, nextFallbackRequestKind, stableWords, uncommittedTail } from "../app/lecture-translator/browser-incremental.mjs";
 
-test("stable prefixes yield only new chunks and final sends only its tail", () => {
+test("stable prefixes yield only new interim chunks", () => {
   let stable = [];
   stable = stableWords(["The", "quick"], ["The", "quick", "brown"], stable);
   assert.deepEqual(stable, ["The", "quick"]);
@@ -14,4 +14,23 @@ test("stable prefixes yield only new chunks and final sends only its tail", () =
 test("each browser fallback request has a unique cache key", () => {
   const ids = [0, 1, 2].map((index) => fallbackRequestSegmentId("session", 4, index));
   assert.equal(new Set(ids).size, ids.length);
+  assert.notEqual(fallbackFinalCorrectionSegmentId("session", 4), ids[0]);
+});
+
+test("pending stable words coalesce without repeating already committed words", () => {
+  const committed = "The quick";
+  const stable = stableWords(["The", "quick", "brown"], ["The", "quick", "brown", "fox"], ["The", "quick", "brown"]);
+  const first = uncommittedTail(stable.join(" "), committed);
+  assert.equal(first, "brown");
+  assert.equal(coalescePendingWords(first, uncommittedTail("The quick brown fox", "The quick brown")), "brown fox");
+});
+
+test("final correction replaces interim Chinese and chooses the best browser alternative", () => {
+  assert.equal(applyFinalCorrection("快速 分段 翻译", "完整句子的准确翻译"), "完整句子的准确翻译");
+  assert.equal(bestTranscript({ length: 2, 0: { transcript: "first", confidence: 0.2 }, 1: { transcript: "best", confidence: 0.9 } }), "best");
+});
+
+test("a final correction wins over pending fast words", () => {
+  assert.equal(nextFallbackRequestKind({ finalRequested: true, finalSource: "The full utterance.", pendingSource: "remaining interim words" }), "accurate");
+  assert.equal(nextFallbackRequestKind({ finalRequested: false, finalSource: null, pendingSource: "new words" }), "fast");
 });

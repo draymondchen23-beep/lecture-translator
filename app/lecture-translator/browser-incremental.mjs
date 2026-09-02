@@ -12,6 +12,39 @@ export function uncommittedTail(source, committed) {
   return splitWords(source).slice(splitWords(committed).length).join(" ");
 }
 
+export function coalescePendingWords(pending, next) {
+  return `${pending} ${next}`.trim();
+}
+
+export function applyFinalCorrection(accumulated, correction) {
+  return correction.trim() || accumulated;
+}
+
+export function nextFallbackRequestKind({ finalRequested, finalSource, pendingSource }) {
+  if (finalRequested && finalSource) return "accurate";
+  return pendingSource ? "fast" : null;
+}
+
 export function fallbackRequestSegmentId(sessionId, sequence, requestIndex) {
   return `${sessionId}:${sequence}:${requestIndex}`;
+}
+
+export function fallbackFinalCorrectionSegmentId(sessionId, sequence) {
+  return `${sessionId}:${sequence}:final`;
+}
+
+export function bestTranscript(result) {
+  let transcript = "";
+  let confidence = -Infinity;
+  for (let index = 0; index < (result?.length || 0); index += 1) {
+    const alternative = result[index];
+    const text = alternative?.transcript?.trim();
+    if (!text) continue;
+    const score = typeof alternative.confidence === "number" ? alternative.confidence : -Infinity;
+    if (!transcript || score > confidence) {
+      transcript = text;
+      confidence = score;
+    }
+  }
+  return transcript;
 }

@@ -24,7 +24,10 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(hook, /webkitSpeechRecognition/);
   assert.match(hook, /Realtime connection closed before opening/);
   assert.match(hook, /recognition\.interimResults = true/);
+  assert.match(hook, /recognition\.maxAlternatives = 3/);
   assert.match(hook, /fetch\("\/api\/translate"/);
+  assert.match(hook, /fallbackCorrectionQueueRef/);
+  assert.match(hook, /fallbackFinalCorrectionSegmentId/);
   assert.match(hook, /url\.searchParams\.set\("provider", "qwen"\)/);
   assert.match(hook, /hostname}:3002/);
   assert.match(hook, /processorOptions: \{ targetSampleRate: SAMPLE_RATE, chunkSamples: CHUNK_SAMPLES \}/);

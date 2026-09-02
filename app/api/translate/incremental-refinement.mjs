@@ -14,10 +14,12 @@ export function validateIncrementalRequest(body) {
   const sessionId = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
   const segmentId = typeof body.segmentId === "string" ? body.segmentId.trim() : "";
   const text = typeof body.text === "string" ? body.text.trim() : "";
+  const quality = body.quality === undefined ? "fast" : body.quality;
   if (!lectureId || !sessionId || !segmentId || !text) return { error: "lectureId, sessionId, segmentId, and one text segment are required.", status: 400 };
+  if (quality !== "fast" && quality !== "accurate") return { error: "quality must be fast or accurate.", status: 400 };
   const tokenEstimate = estimateTokens(text);
   if (text.length > MAX_CHARS || tokenEstimate > MAX_TOKENS) return { error: "This segment exceeds the 20,000 character / 5,000 token refinement limit.", status: 413 };
-  return { value: { lectureId, sessionId, segmentId, text, tokenEstimate, warning: text.length >= WARN_CHARS || tokenEstimate >= WARN_TOKENS } };
+  return { value: { lectureId, sessionId, segmentId, text, quality, tokenEstimate, warning: text.length >= WARN_CHARS || tokenEstimate >= WARN_TOKENS } };
 }
 
 export function createIncrementalRefiner() {

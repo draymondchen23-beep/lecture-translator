@@ -13,7 +13,7 @@ import { createIncrementalRefiner, validateIncrementalRequest } from "./incremen
 import { recordUsage, userFromRequest, withinMonthlyQuota } from "../../auth";
 
 type QwenResponse = { choices?: Array<{ message?: { content?: unknown } }>; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } };
-type TranslateRequest = { text?: unknown; terminology?: unknown; lectureId?: unknown; sessionId?: unknown; segmentId?: unknown };
+type TranslateRequest = { text?: unknown; terminology?: unknown; lectureId?: unknown; sessionId?: unknown; segmentId?: unknown; quality?: unknown };
 
 const DEFAULT_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 const refiner = createIncrementalRefiner();
@@ -88,9 +88,9 @@ export async function POST(request: Request) {
         }),
         signal: AbortSignal.timeout(20_000),
       });
-      let model = explicitModel || "qwen-mt-flash";
+      let model = explicitModel || (value.quality === "accurate" ? "qwen-mt-plus" : "qwen-mt-flash");
       let response = await requestModel(model);
-      if (!explicitModel && [400, 404, 422].includes(response.status)) {
+      if (!explicitModel && value.quality === "fast" && [400, 404, 422].includes(response.status)) {
         console.warn("[translate] Qwen-MT upstream request retrying", { status: response.status, model });
         model = "qwen-mt-plus";
         response = await requestModel(model);
