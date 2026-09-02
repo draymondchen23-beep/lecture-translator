@@ -12,10 +12,12 @@ export interface RealtimeEnvironment {
 
 const MAX_AUDIO_QUEUE = 300;
 
-function endpoint(env: RealtimeEnvironment, request: Request) {
+function endpoint(env: RealtimeEnvironment) {
   const region = env.QWEN_REALTIME_REGION === "singapore" ? "ap-southeast-1" : "cn-beijing";
   const model = env.QWEN_REALTIME_MODEL || "qwen3.5-livetranslate-flash-realtime";
-  return `wss://${env.DASHSCOPE_WORKSPACE_ID}.${region}.maas.aliyuncs.com/api-ws/v1/realtime?model=${encodeURIComponent(model)}`;
+  // Workers' fetch performs the WebSocket upgrade from an HTTPS URL. The
+  // Upgrade header below switches this request to a WebSocket connection.
+  return `https://${env.DASHSCOPE_WORKSPACE_ID}.${region}.maas.aliyuncs.com/api-ws/v1/realtime?model=${encodeURIComponent(model)}`;
 }
 
 function jsonMessage(socket: RealtimeSocket, payload: object) {
@@ -89,7 +91,7 @@ export async function handleRealtimeUpgrade(request: Request, env: RealtimeEnvir
       return;
     }
     jsonMessage(client, { type: "state", state: "CONNECTING", provider: "qwen" });
-    const response = await fetch(endpoint(env, request), { headers: { Authorization: `Bearer ${env.DASHSCOPE_API_KEY}`, Upgrade: "websocket" } });
+    const response = await fetch(endpoint(env), { headers: { Authorization: `Bearer ${env.DASHSCOPE_API_KEY}`, Upgrade: "websocket" } });
     const socket = (response as Response & { webSocket?: RealtimeSocket }).webSocket;
     if (response.status !== 101 || !socket) throw new Error(`Qwen WebSocket handshake failed (${response.status}).`);
     upstream = socket;
