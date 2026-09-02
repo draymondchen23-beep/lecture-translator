@@ -19,7 +19,8 @@ export async function POST(request: Request) {
     await db.insert(users).values({ id, phone, displayName: displayName || "Student", passwordHash: await hashPassword(password), role: "user", status: "active", monthlyTokenLimit: 100_000 });
     const { cookie } = await createSession(id);
     return sessionResponse({ user: { id, phone, displayName: displayName || "Student", role: "user", monthlyTokenLimit: 100_000 } }, cookie, 201);
-  } catch {
+  } catch (error) {
+    console.error("[AUTH] register failed", error instanceof Error ? error.message : "unknown error");
     return Response.json({ error: "用户数据库尚未配置。" }, { status: 503 });
   }
 }

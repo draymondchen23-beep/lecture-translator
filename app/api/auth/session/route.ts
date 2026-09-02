@@ -5,7 +5,8 @@ export async function GET(request: Request) {
     await ensureAdmin();
     const user = await userFromRequest(request);
     return Response.json({ user }, { headers: { "cache-control": "no-store" } });
-  } catch {
+  } catch (error) {
+    console.error("[AUTH] session failed", error instanceof Error ? error.message : "unknown error");
     return Response.json({ error: "用户数据库尚未配置。" }, { status: 503 });
   }
 }

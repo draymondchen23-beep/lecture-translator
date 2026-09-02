@@ -16,7 +16,8 @@ export async function POST(request: Request) {
     const { cookie } = await createSession(row[0].id);
     await db.update(users).set({ lastLoginAt: new Date().toISOString() }).where(eq(users.id, row[0].id));
     return sessionResponse({ user: { id: row[0].id, phone: row[0].phone, displayName: row[0].displayName, role: row[0].role, monthlyTokenLimit: row[0].monthlyTokenLimit } }, cookie);
-  } catch {
+  } catch (error) {
+    console.error("[AUTH] login failed", error instanceof Error ? error.message : "unknown error");
     return Response.json({ error: "用户数据库尚未配置。" }, { status: 503 });
   }
 }

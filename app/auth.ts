@@ -1,5 +1,6 @@
 import { and, eq, gt, lt, sql } from "drizzle-orm";
 import { headers } from "next/headers";
+import { env } from "cloudflare:workers";
 import { getDb } from "../db";
 import { invites, sessions, usageEvents, users } from "../db/schema";
 
@@ -22,7 +23,7 @@ const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const PASSWORD_ITERATIONS = 120_000;
 
 function environment() {
-  return import("cloudflare:workers").then(({ env }) => env as AuthEnvironment);
+  return env as AuthEnvironment;
 }
 
 export function normalizePhone(value: string) {
@@ -89,7 +90,7 @@ export function clearAuthCookie() {
 }
 
 export async function ensureAdmin() {
-  const config = await environment();
+  const config = environment();
   const phone = normalizePhone(config.AUTH_ADMIN_PHONE || "");
   const password = config.AUTH_ADMIN_PASSWORD || "";
   if (!isPhone(phone) || password.length < 8) return null;
