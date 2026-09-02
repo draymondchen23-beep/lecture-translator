@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyFinalCorrection, bestTranscript, coalescePendingWords, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, nextFallbackRequestKind, stableWords, uncommittedTail } from "../app/lecture-translator/browser-incremental.mjs";
+import { applyFinalCorrection, bestTranscript, coalescePendingWords, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, nextFallbackRequestKind, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, stableWords, uncommittedTail } from "../app/lecture-translator/browser-incremental.mjs";
 
 test("stable prefixes yield only new interim chunks", () => {
   let stable = [];
@@ -33,4 +33,11 @@ test("final correction replaces interim Chinese and chooses the best browser alt
 test("a final correction wins over pending fast words", () => {
   assert.equal(nextFallbackRequestKind({ finalRequested: true, finalSource: "The full utterance.", pendingSource: "remaining interim words" }), "accurate");
   assert.equal(nextFallbackRequestKind({ finalRequested: false, finalSource: null, pendingSource: "new words" }), "fast");
+});
+
+test("paused recognition ignores late final results and Sites starts the fallback immediately", () => {
+  assert.equal(shouldProcessBrowserResult({ fallbackActive: true, paused: true, intentionalClose: false }), false);
+  assert.equal(shouldProcessBrowserResult({ fallbackActive: true, paused: false, intentionalClose: false }), true);
+  assert.equal(shouldStartBrowserFallbackImmediately("lecture.chatgpt.site"), true);
+  assert.equal(shouldStartBrowserFallbackImmediately("localhost"), false);
 });

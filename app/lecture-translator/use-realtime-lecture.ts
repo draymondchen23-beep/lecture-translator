@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { applyFinalCorrection, bestTranscript, coalescePendingWords, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, nextFallbackRequestKind, splitWords, stableWords } from "./browser-incremental.mjs";
+import { applyFinalCorrection, bestTranscript, coalescePendingWords, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, nextFallbackRequestKind, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, splitWords, stableWords } from "./browser-incremental.mjs";
 import type { LectureState, ProviderPreference, RealtimeServerEvent } from "./types";
 
 type Options = {
@@ -55,7 +55,7 @@ const SAMPLE_RATE = 16_000;
 const CHUNK_SAMPLES = 1_600;
 const MAX_QUEUED_CHUNKS = 300;
 const DEBUG = process.env.NODE_ENV !== "production";
-const FALLBACK_TRANSLATION_INTERVAL = 600;
+const FALLBACK_TRANSLATION_INTERVAL = 250;
 
 function appendTranslation(previous: string, next: string) {
   return `${previous}${previous && next ? " " : ""}${next}`;
@@ -342,6 +342,7 @@ export function useRealtimeLecture(options: Options) {
     if ("maxAlternatives" in recognition) recognition.maxAlternatives = 3;
     recognition.lang = "en-GB";
     recognition.onresult = (event) => {
+      if (!shouldProcessBrowserResult({ fallbackActive: fallbackActiveRef.current, paused: pausedRef.current, intentionalClose: intentionalCloseRef.current })) return;
       let interim = "";
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
         const result = event.results[index];
@@ -475,6 +476,7 @@ export function useRealtimeLecture(options: Options) {
     setState("CONNECTING");
     try {
       await startMicrophone();
+      if (shouldStartBrowserFallbackImmediately(window.location.hostname) && startBrowserFallback()) return;
       try {
         await connect();
       } catch (error) {

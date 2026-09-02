@@ -25,6 +25,14 @@ export function nextFallbackRequestKind({ finalRequested, finalSource, pendingSo
   return pendingSource ? "fast" : null;
 }
 
+export function shouldProcessBrowserResult({ fallbackActive, paused, intentionalClose }) {
+  return fallbackActive && !paused && !intentionalClose;
+}
+
+export function shouldStartBrowserFallbackImmediately(hostname) {
+  return typeof hostname === "string" && /\.chatgpt\.site$/i.test(hostname);
+}
+
 export function fallbackRequestSegmentId(sessionId, sequence, requestIndex) {
   return `${sessionId}:${sequence}:${requestIndex}`;
 }

@@ -20,11 +20,14 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(hook, /navigator\.mediaDevices\.getUserMedia/);
   assert.match(hook, /AudioWorkletNode/);
   assert.match(hook, /CHUNK_SAMPLES = 1_600/);
+  assert.match(hook, /FALLBACK_TRANSLATION_INTERVAL = 250/);
   assert.match(hook, /MAX_QUEUED_CHUNKS = 300/);
   assert.match(hook, /webkitSpeechRecognition/);
   assert.match(hook, /Realtime connection closed before opening/);
   assert.match(hook, /recognition\.interimResults = true/);
   assert.match(hook, /recognition\.maxAlternatives = 3/);
+  assert.match(hook, /shouldProcessBrowserResult/);
+  assert.match(hook, /shouldStartBrowserFallbackImmediately\(window\.location\.hostname\)/);
   assert.match(hook, /fetch\("\/api\/translate"/);
   assert.match(hook, /fallbackCorrectionQueueRef/);
   assert.match(hook, /fallbackFinalCorrectionSegmentId/);
