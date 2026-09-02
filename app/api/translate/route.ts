@@ -10,6 +10,7 @@ type Environment = {
 };
 
 import { createIncrementalRefiner, validateIncrementalRequest } from "./incremental-refinement.mjs";
+import { cleanTranslation, translationNeedsRetry } from "./translation-quality.mjs";
 import { recordUsage, userFromRequest, withinMonthlyQuota } from "../../auth";
 
 type QwenResponse = { choices?: Array<{ message?: { content?: unknown } }>; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } };
@@ -76,42 +77,71 @@ export async function POST(request: Request) {
   if (!apiKey) return json({ error: "Qwen-MT refinement is not configured on the server." }, 503);
   if (!(await withinMonthlyQuota(user, value.tokenEstimate))) return json({ error: "本月 API 配额已用尽，请联系管理员。" }, 429);
 
+  let billedTokens = 0;
   try {
+    let upstreamAttempts = 0;
     const refined = await refiner.run(value, async () => {
       const explicitModel = env.QWEN_MT_MODEL?.trim();
-      const requestModel = (model: string) => fetch(qwenUrl(env), {
+      const requestModel = (model: string, strict = false) => fetch(qwenUrl(env), {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({
           model,
           messages: [{ role: "user", content: value.text }],
-          translation_options: { source_lang: "English", target_lang: "Chinese", domains: `University lecture, academic English. Translate only the current input. Use any supplied previous-block context only to resolve continuity, pronouns and terminology. Preserve formulas, numbers, units, names and established English abbreviations. On first use, format uncertain academic terms as 中文（English Term）.${translationInstructions(value.context, body.terminology)}` },
+          translation_options: { source_lang: "English", target_lang: "Chinese", domains: `University lecture, academic English. Translate only the current input. Use any supplied previous-block context only to resolve continuity, pronouns and terminology. Preserve formulas, numbers, units, names and established English abbreviations. On first use, format uncertain academic terms as 中文（English Term）.${strict ? " Output only Simplified Chinese prose; retain only necessary biomedical English abbreviations, terms, equations, units and proper names. Do not output Arabic or other scripts, explanations, labels or Markdown." : ""}${translationInstructions(value.context, body.terminology)}` },
         }),
         signal: AbortSignal.timeout(20_000),
       });
+      const request = (model: string, strict = false) => {
+        upstreamAttempts += 1;
+        // Reserve a conservative input estimate before each upstream call so
+        // even a failed strict retry cannot disappear from quota accounting.
+        billedTokens += value.tokenEstimate;
+        return requestModel(model, strict);
+      };
       let model = explicitModel || (value.quality === "accurate" ? "qwen-mt-plus" : "qwen-mt-flash");
-      let response = await requestModel(model);
+      let response = await request(model);
       if (!explicitModel && value.quality === "fast" && [400, 404, 422].includes(response.status)) {
         console.warn("[translate] Qwen-MT upstream request retrying", { status: response.status, model });
         model = "qwen-mt-plus";
-        response = await requestModel(model);
+        response = await request(model);
       }
       if (!response.ok) {
         console.warn("[translate] Qwen-MT upstream request failed", { status: response.status, model });
         throw new Error(response.status === 429 ? "Qwen-MT is busy or its quota is exhausted." : "Qwen-MT did not accept the refinement request.");
       }
       const result = await response.json().catch(() => ({})) as QwenResponse;
-      const translation = result.choices?.[0]?.message?.content;
+      let translation = result.choices?.[0]?.message?.content;
       if (typeof translation !== "string" || !translation.trim()) throw new Error("Qwen-MT returned an unreadable translation.");
+      let inputTokens = typeof result.usage?.prompt_tokens === "number" ? result.usage.prompt_tokens : undefined;
+      let outputTokens = typeof result.usage?.completion_tokens === "number" ? result.usage.completion_tokens : undefined;
+      billedTokens += (inputTokens ?? value.tokenEstimate) - value.tokenEstimate + (outputTokens ?? Math.ceil(translation.length / 4));
+      if (translationNeedsRetry(translation)) {
+        console.warn("[translate] Qwen-MT output failed Chinese quality check; retrying with qwen-mt-plus");
+        const retry = await request("qwen-mt-plus", true);
+        if (!retry.ok) throw new Error("Qwen-MT quality retry failed.");
+        const retryResult = await retry.json().catch(() => ({})) as QwenResponse;
+        const retryTranslation = retryResult.choices?.[0]?.message?.content;
+        if (typeof retryTranslation !== "string" || !retryTranslation.trim()) throw new Error("Qwen-MT returned an unreadable translation.");
+        const retryInputTokens = typeof retryResult.usage?.prompt_tokens === "number" ? retryResult.usage.prompt_tokens : undefined;
+        const retryOutputTokens = typeof retryResult.usage?.completion_tokens === "number" ? retryResult.usage.completion_tokens : undefined;
+        billedTokens += (retryInputTokens ?? value.tokenEstimate) - value.tokenEstimate + (retryOutputTokens ?? Math.ceil(retryTranslation.length / 4));
+        const cleaned = translationNeedsRetry(retryTranslation) ? cleanTranslation(retryTranslation) : retryTranslation.trim();
+        if (translationNeedsRetry(cleaned)) throw new Error("Qwen-MT quality retry did not return Simplified Chinese.");
+        translation = cleaned;
+        inputTokens = (inputTokens ?? value.tokenEstimate) + (retryInputTokens ?? value.tokenEstimate);
+        outputTokens = (outputTokens ?? Math.ceil(String(result.choices?.[0]?.message?.content || "").length / 4)) + (retryOutputTokens ?? Math.ceil(retryTranslation.length / 4));
+      } else {
+        translation = translation.trim();
+      }
       return {
-        translation: translation.trim(), provider: "qwen-mt",
-        inputTokens: typeof result.usage?.prompt_tokens === "number" ? result.usage.prompt_tokens : undefined,
-        outputTokens: typeof result.usage?.completion_tokens === "number" ? result.usage.completion_tokens : undefined,
+        translation, provider: "qwen-mt", inputTokens, outputTokens,
       };
     });
-    if (!refined.cacheHit) await recordUsage(user.id, "translation", value.tokenEstimate + Math.ceil(String(refined.translation || "").length / 4));
+    if (!refined.cacheHit) await recordUsage(user.id, "translation", billedTokens || value.tokenEstimate * upstreamAttempts);
     return json(refined);
   } catch {
+    if (billedTokens) await recordUsage(user.id, "translation", billedTokens).catch(() => undefined);
     return json({ error: "Unable to reach Qwen-MT refinement." }, 502);
   }
 }

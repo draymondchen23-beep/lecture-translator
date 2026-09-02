@@ -16,8 +16,24 @@ export function coalescePendingWords(pending, next) {
   return `${pending} ${next}`.trim();
 }
 
-export function isReadyStablePhrase(text, minimumWords = 5) {
-  return splitWords(text).length >= minimumWords || /[.!?,;:]$/.test(text.trim());
+export const MAX_INTERIM_TRANSLATIONS = 1;
+
+export function hasSemanticBoundary(text) {
+  return /[.!?]["')\]]*$/.test(text.trim());
+}
+
+export function isReadyStablePhrase(text) {
+  return hasSemanticBoundary(text);
+}
+
+export function planInterimTranslation({ sourceText, stableText, interimCount = 0, stableObservations = 0, maxInterims = MAX_INTERIM_TRANSLATIONS }) {
+  const source = sourceText.trim();
+  const stable = stableText.trim();
+  if (!stable || interimCount >= maxInterims) return null;
+  if (hasSemanticBoundary(stable)) return { text: stable, mode: "replace" };
+  const wordCount = splitWords(stable).length;
+  if (stable === source && stableObservations >= 2 && wordCount >= 3 && wordCount <= 8) return { text: stable, mode: "replace" };
+  return null;
 }
 
 export function contextTail(source, maxChars = 400) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { reducePartialEvent } from "../app/lecture-translator/partial-events.mjs";
-import { advanceDisplayedText, commonPrefixByCodePoint, progressiveDelay, reconcileDisplayedPrefix, shouldRecenter } from "../app/lecture-translator/live-display.mjs";
+import { advanceDisplayedText, commonPrefixByCodePoint, progressiveDelay, reconcileDisplayedPrefix, shouldRecenter, splitSentences, visibleContentRect } from "../app/lecture-translator/live-display.mjs";
 
 test("late translations and finals cannot replace a newer live block", () => {
   let partial = { source: "first", translation: "第一", sequence: 3 };
@@ -38,4 +38,11 @@ test("center recentering ignores small character-growth drift", () => {
   const container = { top: 100, height: 600 };
   assert.equal(shouldRecenter(container, { top: 350, height: 100 }), false);
   assert.equal(shouldRecenter(container, { top: 390, height: 100 }), true);
+  assert.deepEqual(visibleContentRect(container, 620), { top: 100, height: 508 });
+});
+
+test("sentence display splits English and Chinese without dropping closers or an unfinished tail", () => {
+  assert.deepEqual(splitSentences('First point. "Second point!" Tail'), ['First point.', '"Second point!"', 'Tail']);
+  assert.deepEqual(splitSentences("第一句。第二句！未完成", "zh"), ["第一句。", "第二句！", "未完成"]);
+  assert.deepEqual(splitSentences("Wait... really?", "en"), ["Wait...", "really?"]);
 });

@@ -49,3 +49,37 @@ export function centerOffset(container, target) {
 export function shouldRecenter(container, target, tolerance = 24) {
   return Math.abs(centerOffset(container, target)) > tolerance;
 }
+
+export function visibleContentRect(container, dockTop, gap = 12) {
+  const bottom = Math.min(container.top + container.height, dockTop - gap);
+  return { top: container.top, height: Math.max(0, bottom - container.top) };
+}
+
+const ENDS = {
+  en: new Set([".", "!", "?"]),
+  zh: new Set(["。", "！", "？"]),
+};
+const CLOSERS = new Set(["\"", "'", "”", "’", "»", "）", "】", "」", "』", ")", "]"]);
+
+export function splitSentences(text, language = "en") {
+  const points = codePoints(text).join("").trim();
+  if (!points) return [];
+  const chars = codePoints(points);
+  const endings = ENDS[language === "zh" ? "zh" : "en"];
+  const sentences = [];
+  let start = 0;
+  for (let index = 0; index < chars.length; index += 1) {
+    if (!endings.has(chars[index])) continue;
+    // Do not split an ellipsis into three tiny lines.
+    if (chars[index] === "." && chars[index + 1] === ".") continue;
+    let end = index + 1;
+    while (end < chars.length && CLOSERS.has(chars[end])) end += 1;
+    const sentence = chars.slice(start, end).join("").trim();
+    if (sentence) sentences.push(sentence);
+    start = end;
+    index = end - 1;
+  }
+  const tail = chars.slice(start).join("").trim();
+  if (tail) sentences.push(tail);
+  return sentences;
+}

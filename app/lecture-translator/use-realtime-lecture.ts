@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { applyFinalCorrection, bestTranscript, coalescePendingWords, contextForFastRequest, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, isReadyStablePhrase, nextFallbackRequestKind, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, splitWords, stableWords } from "./browser-incremental.mjs";
+import { bestTranscript, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, planInterimTranslation, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, splitWords, stableWords } from "./browser-incremental.mjs";
 import type { LectureState, ProviderPreference, RealtimeServerEvent } from "./types";
 
 type Options = {
@@ -38,29 +38,25 @@ type FallbackLiveBlock = {
   sequence: number;
   startedAt: number;
   sourceText: string;
-  committedSource: string;
   translatedText: string;
   previousWords: string[];
   stableWords: string[];
+  lastStableText: string;
+  stableObservations: number;
+  interimCount: number;
   requestIndex: number;
-  pendingSource: string;
   context: string;
-  finalContext: string;
-  contextUpdated: boolean;
+  interimSource: string;
+  interimTranslation: string;
+  interimQuality: "fast" | "accurate" | null;
   finalSource: string | null;
   finalRequested: boolean;
-  finalCorrectionQueued: boolean;
-  workerQueued: boolean;
 };
 
 const SAMPLE_RATE = 16_000;
 const CHUNK_SAMPLES = 1_600;
 const MAX_QUEUED_CHUNKS = 300;
 const DEBUG = process.env.NODE_ENV !== "production";
-function appendTranslation(previous: string, next: string) {
-  return `${previous}${previous && next ? " " : ""}${next}`;
-}
-
 function trace(event: string, details: Record<string, unknown> = {}) {
   if (DEBUG) console.debug("[lecture-realtime]", { event, ...details });
 }
@@ -93,7 +89,6 @@ export function useRealtimeLecture(options: Options) {
   const fallbackContextRef = useRef("");
   const fallbackFinalIndexesRef = useRef(new Set<number>());
   const fallbackQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const fallbackCorrectionQueueRef = useRef<Promise<void>>(Promise.resolve());
   const fallbackWorkRef = useRef(new Set<Promise<void>>());
   const fallbackRestartRef = useRef<number | null>(null);
   const fallbackEpochRef = useRef(0);
@@ -240,67 +235,57 @@ export function useRealtimeLecture(options: Options) {
     return result.translation.trim();
   }, []);
 
-  const queueFallbackFinalCorrection = useCallback((block: FallbackLiveBlock, sessionId: string, epoch: number) => {
-    if (block.finalCorrectionQueued || !block.finalSource) return;
-    block.finalCorrectionQueued = true;
-    const task = fallbackCorrectionQueueRef.current.then(async () => {
-      if (epoch !== fallbackEpochRef.current || !block.finalSource) return;
+  const queueFallbackInterim = useCallback((block: FallbackLiveBlock, sourceText: string) => {
+    const sessionId = fallbackSessionRef.current;
+    const epoch = fallbackEpochRef.current;
+    const task = fallbackQueueRef.current.then(async () => {
+      if (epoch !== fallbackEpochRef.current || block.finalRequested) return;
       try {
         setState("PROCESSING");
-        block.context = block.finalContext;
-        const translated = await translateFallback(sessionId, block.finalSource, fallbackFinalCorrectionSegmentId(sessionId, block.sequence), "accurate", block.context);
+        const translated = await translateFallback(sessionId, sourceText, fallbackRequestSegmentId(sessionId, block.sequence, block.requestIndex++), "accurate", block.context);
         if (epoch !== fallbackEpochRef.current) return;
-        block.translatedText = applyFinalCorrection(block.translatedText, translated);
-        emit({ type: "translation.partial", text: block.translatedText, sequence: block.sequence, startedAt: block.startedAt });
+        block.interimSource = sourceText;
+        block.interimTranslation = translated;
+        block.interimQuality = "accurate";
+        if (block.finalRequested) return;
+        block.translatedText = translated;
+        emit({ type: "translation.partial", text: translated, sequence: block.sequence, startedAt: block.startedAt });
+      } catch (error) {
+        if (epoch !== fallbackEpochRef.current) return;
+        emit({ type: "error", message: error instanceof Error ? error.message : "Translation failed.", recoverable: true });
+      }
+      if (fallbackActiveRef.current && !pausedRef.current) setState("LISTENING");
+    });
+    fallbackQueueRef.current = task;
+    trackFallbackWork(task);
+  }, [emit, trackFallbackWork, translateFallback]);
+
+  const queueFallbackFinal = useCallback((block: FallbackLiveBlock) => {
+    const sessionId = fallbackSessionRef.current;
+    const epoch = fallbackEpochRef.current;
+    const task = fallbackQueueRef.current.then(async () => {
+      const sourceText = block.finalSource;
+      if (epoch !== fallbackEpochRef.current || !sourceText) return;
+      try {
+        setState("PROCESSING");
+        const translated = block.interimQuality === "accurate" && block.interimSource === sourceText
+          ? block.interimTranslation
+          : await translateFallback(sessionId, sourceText, fallbackFinalCorrectionSegmentId(sessionId, block.sequence), "accurate", block.context);
+        if (epoch !== fallbackEpochRef.current) return;
+        block.translatedText = translated;
+        fallbackContextRef.current = contextTail(sourceText);
+        emit({ type: "translation.partial", text: translated, sequence: block.sequence, startedAt: block.startedAt });
       } catch (error) {
         if (epoch !== fallbackEpochRef.current) return;
         emit({ type: "error", message: error instanceof Error ? error.message : "Translation failed.", recoverable: true });
       }
       if (epoch !== fallbackEpochRef.current) return;
-      emit({ type: "segment.final", sequence: block.sequence, sourceText: block.finalSource || block.sourceText, translatedText: block.translatedText, startedAt: block.startedAt, endedAt: Date.now(), provider: "qwen", refined: true });
+      emit({ type: "segment.final", sequence: block.sequence, sourceText, translatedText: block.translatedText, startedAt: block.startedAt, endedAt: Date.now(), provider: "qwen", refined: true });
       if (fallbackActiveRef.current && !pausedRef.current) setState("LISTENING");
-    }).finally(() => {
-      block.finalCorrectionQueued = false;
-    });
-    fallbackCorrectionQueueRef.current = task;
-    trackFallbackWork(task);
-  }, [emit, trackFallbackWork, translateFallback]);
-
-  const queueFallbackTranslation = useCallback((block: FallbackLiveBlock) => {
-    if (block.workerQueued) return;
-    block.workerQueued = true;
-    const sessionId = fallbackSessionRef.current;
-    const epoch = fallbackEpochRef.current;
-    const task = fallbackQueueRef.current.then(async () => {
-      while (epoch === fallbackEpochRef.current) {
-        const kind = nextFallbackRequestKind(block);
-        if (kind === "accurate") {
-          queueFallbackFinalCorrection(block, sessionId, epoch);
-          return;
-        }
-        if (!kind || !isReadyStablePhrase(block.pendingSource)) return;
-        const sourceText = block.pendingSource;
-        block.pendingSource = "";
-        try {
-          setState("PROCESSING");
-          if (!contextForFastRequest(block.context, block.requestIndex)) block.context = "";
-          const translated = await translateFallback(sessionId, sourceText, fallbackRequestSegmentId(sessionId, block.sequence, block.requestIndex++), "accurate", block.context);
-          if (epoch !== fallbackEpochRef.current) return;
-          block.translatedText = appendTranslation(block.translatedText, translated);
-          emit({ type: "translation.partial", text: block.translatedText, sequence: block.sequence, startedAt: block.startedAt });
-          if (fallbackActiveRef.current && !pausedRef.current) setState("LISTENING");
-        } catch (error) {
-          if (epoch !== fallbackEpochRef.current) return;
-          emit({ type: "error", message: error instanceof Error ? error.message : "Translation failed.", recoverable: true });
-          if (!block.finalRequested) return;
-        }
-      }
-    }).finally(() => {
-      block.workerQueued = false;
     });
     fallbackQueueRef.current = task;
     trackFallbackWork(task);
-  }, [emit, queueFallbackFinalCorrection, trackFallbackWork, translateFallback]);
+  }, [emit, trackFallbackWork, translateFallback]);
 
   const flushFallbackBlock = useCallback(() => {
     const block = fallbackBlockRef.current;
@@ -309,15 +294,10 @@ export function useRealtimeLecture(options: Options) {
     if (block.sourceText && !block.finalRequested) {
       block.finalRequested = true;
       block.finalSource = block.sourceText;
-      block.pendingSource = "";
-      if (!block.contextUpdated) {
-        fallbackContextRef.current = contextTail(block.finalSource);
-        block.contextUpdated = true;
-      }
-      queueFallbackTranslation(block);
+      queueFallbackFinal(block);
     }
     fallbackStartedAtRef.current = Date.now();
-  }, [queueFallbackTranslation]);
+  }, [queueFallbackFinal]);
 
   const startBrowserFallback = useCallback(() => {
     const speechWindow = window as unknown as {
@@ -336,7 +316,6 @@ export function useRealtimeLecture(options: Options) {
     fallbackContextRef.current = "";
     fallbackFinalIndexesRef.current = new Set();
     fallbackQueueRef.current = Promise.resolve();
-    fallbackCorrectionQueueRef.current = Promise.resolve();
     fallbackWorkRef.current.clear();
     fallbackEpochRef.current += 1;
     clearFallbackBlock();
@@ -358,20 +337,15 @@ export function useRealtimeLecture(options: Options) {
           fallbackFinalIndexesRef.current.add(index);
           const block = fallbackBlockRef.current || {
             sequence: fallbackSequenceRef.current++, startedAt: fallbackStartedAtRef.current || Date.now(), sourceText: text,
-            committedSource: "", translatedText: "", previousWords: [], stableWords: [], requestIndex: 0,
-            pendingSource: "", context: fallbackContextRef.current, finalContext: fallbackContextRef.current, contextUpdated: false, finalSource: null, finalRequested: false, finalCorrectionQueued: false, workerQueued: false,
+            translatedText: "", previousWords: [], stableWords: [], lastStableText: "", stableObservations: 0, interimCount: 0, requestIndex: 0,
+            context: fallbackContextRef.current, interimSource: "", interimTranslation: "", interimQuality: null, finalSource: null, finalRequested: false,
           };
           if (block.finalRequested) continue;
           block.sourceText = text;
           block.finalRequested = true;
           block.finalSource = text;
-          block.pendingSource = "";
-          if (!block.contextUpdated) {
-            fallbackContextRef.current = contextTail(text);
-            block.contextUpdated = true;
-          }
           emit({ type: "source.partial", text, sequence: block.sequence, startedAt: block.startedAt });
-          queueFallbackTranslation(block);
+          queueFallbackFinal(block);
           fallbackBlockRef.current = null;
           fallbackStartedAtRef.current = Date.now();
         } else {
@@ -382,8 +356,8 @@ export function useRealtimeLecture(options: Options) {
         if (!fallbackStartedAtRef.current) fallbackStartedAtRef.current = Date.now();
         const block = fallbackBlockRef.current || {
           sequence: fallbackSequenceRef.current++, startedAt: fallbackStartedAtRef.current, sourceText: "",
-          committedSource: "", translatedText: "", previousWords: [], stableWords: [], requestIndex: 0,
-          pendingSource: "", context: fallbackContextRef.current, finalContext: fallbackContextRef.current, contextUpdated: false, finalSource: null, finalRequested: false, finalCorrectionQueued: false, workerQueued: false,
+          translatedText: "", previousWords: [], stableWords: [], lastStableText: "", stableObservations: 0, interimCount: 0, requestIndex: 0,
+          context: fallbackContextRef.current, interimSource: "", interimTranslation: "", interimQuality: null, finalSource: null, finalRequested: false,
         };
         const interimWords = splitWords(interim);
         block.stableWords = stableWords(block.previousWords, interimWords, block.stableWords);
@@ -391,12 +365,13 @@ export function useRealtimeLecture(options: Options) {
         block.sourceText = interim;
         fallbackBlockRef.current = block;
         emit({ type: "source.partial", text: interim, sequence: block.sequence, startedAt: block.startedAt });
-        const committedCount = splitWords(block.committedSource).length;
-        const chunk = block.stableWords.slice(committedCount).join(" ");
-        if (chunk) {
-          block.committedSource = `${block.committedSource} ${chunk}`.trim();
-          block.pendingSource = coalescePendingWords(block.pendingSource, chunk);
-          if (isReadyStablePhrase(block.pendingSource)) queueFallbackTranslation(block);
+        const stableText = block.stableWords.join(" ");
+        block.stableObservations = stableText && stableText === block.lastStableText ? block.stableObservations + 1 : 1;
+        block.lastStableText = stableText;
+        const plan = planInterimTranslation({ sourceText: block.sourceText, stableText, stableObservations: block.stableObservations, interimCount: block.interimCount });
+        if (plan) {
+          block.interimCount += 1;
+          queueFallbackInterim(block, plan.text);
         }
         setState("SPEAKING");
       }
@@ -417,7 +392,7 @@ export function useRealtimeLecture(options: Options) {
     recognition.start();
     emit({ type: "state", state: "LISTENING", provider: "qwen", message: "Browser transcription compatibility mode" });
     return true;
-  }, [cleanupSocket, clearFallbackBlock, emit, flushFallbackBlock, queueFallbackTranslation]);
+  }, [cleanupSocket, clearFallbackBlock, emit, flushFallbackBlock, queueFallbackFinal, queueFallbackInterim]);
 
   const startMicrophone = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser cannot access a microphone.");

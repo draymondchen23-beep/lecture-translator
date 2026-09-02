@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyFinalCorrection, bestTranscript, coalescePendingWords, contextForFastRequest, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, isReadyStablePhrase, nextFallbackRequestKind, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, stableWords, uncommittedTail } from "../app/lecture-translator/browser-incremental.mjs";
+import { applyFinalCorrection, bestTranscript, coalescePendingWords, contextForFastRequest, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, hasSemanticBoundary, isReadyStablePhrase, nextFallbackRequestKind, planInterimTranslation, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, stableWords, uncommittedTail } from "../app/lecture-translator/browser-incremental.mjs";
 
 test("stable prefixes yield a new interim chunk without a timer", () => {
   let stable = [];
@@ -25,10 +25,17 @@ test("pending stable words coalesce without repeating already committed words", 
   assert.equal(coalescePendingWords(first, uncommittedTail("The quick brown fox", "The quick brown")), "brown fox");
 });
 
-test("stable words wait for a meaningful phrase or punctuation boundary", () => {
-  assert.equal(isReadyStablePhrase("one two three four"), false);
-  assert.equal(isReadyStablePhrase("one two three four five"), true);
-  assert.equal(isReadyStablePhrase("however,"), true);
+test("only a semantic boundary opens the legacy stable phrase gate", () => {
+  assert.equal(isReadyStablePhrase("one two three four five"), false);
+  assert.equal(isReadyStablePhrase("A long sentence,"), false);
+  assert.equal(hasSemanticBoundary("A complete sentence."), true);
+});
+
+test("interim planning replaces only a complete short unit and limits requests", () => {
+  assert.equal(planInterimTranslation({ sourceText: "a longer unbounded sentence continues with several more words here", stableText: "a longer unbounded sentence continues with several more words here", stableObservations: 2 }), null);
+  assert.deepEqual(planInterimTranslation({ sourceText: "This short statement", stableText: "This short statement", stableObservations: 2 }), { text: "This short statement", mode: "replace" });
+  assert.equal(planInterimTranslation({ sourceText: "A long sentence,", stableText: "A long sentence,", stableObservations: 1 }), null);
+  assert.equal(planInterimTranslation({ sourceText: "This short statement", stableText: "This short statement", stableObservations: 2, interimCount: 1 }), null);
 });
 
 test("context is limited to the preceding finalized block tail", () => {
