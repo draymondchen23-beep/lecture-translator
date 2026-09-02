@@ -52,6 +52,10 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(page, /loadWorkspace/);
   assert.match(page, /\/api\/summarize/);
   assert.match(route, /qwen-mt-flash/);
+  assert.match(route, /QWEN_API_URL\?\.trim\(\)/);
+  assert.match(route, /cn-beijing\.maas\.aliyuncs\.com\/compatible-mode\/v1\/chat\/completions/);
+  assert.match(route, /Qwen-MT upstream request failed/);
+  assert.doesNotMatch(route, /response\.text\(/);
 
   // Configuration names may be shown as setup guidance, but credentials must
   // remain server-side and never be embedded as client-side string literals.

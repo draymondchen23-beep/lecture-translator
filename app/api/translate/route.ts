@@ -18,6 +18,15 @@ type TranslateRequest = { text?: unknown; terminology?: unknown; lectureId?: unk
 const DEFAULT_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 const refiner = createIncrementalRefiner();
 
+function qwenUrl(env: Environment) {
+  const override = env.QWEN_API_URL?.trim();
+  if (override) return override;
+  const workspace = env.DASHSCOPE_WORKSPACE_ID?.trim();
+  return workspace
+    ? `https://${workspace}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions`
+    : DEFAULT_URL;
+}
+
 function json(body: object, status = 200) {
   return Response.json(body, { status, headers: { "cache-control": "no-store" } });
 }
@@ -64,7 +73,7 @@ export async function POST(request: Request) {
 
   try {
     const refined = await refiner.run(value, async () => {
-      const response = await fetch(env.QWEN_API_URL?.trim() || DEFAULT_URL, {
+      const response = await fetch(qwenUrl(env), {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({
@@ -74,7 +83,10 @@ export async function POST(request: Request) {
         }),
         signal: AbortSignal.timeout(20_000),
       });
-      if (!response.ok) throw new Error(response.status === 429 ? "Qwen-MT is busy or its quota is exhausted." : "Qwen-MT did not accept the refinement request.");
+      if (!response.ok) {
+        console.warn("[translate] Qwen-MT upstream request failed", { status: response.status });
+        throw new Error(response.status === 429 ? "Qwen-MT is busy or its quota is exhausted." : "Qwen-MT did not accept the refinement request.");
+      }
       const result = await response.json().catch(() => ({})) as QwenResponse;
       const translation = result.choices?.[0]?.message?.content;
       if (typeof translation !== "string" || !translation.trim()) throw new Error("Qwen-MT returned an unreadable translation.");
