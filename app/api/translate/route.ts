@@ -10,6 +10,7 @@ type Environment = {
 };
 
 import { createIncrementalRefiner, validateIncrementalRequest } from "./incremental-refinement.mjs";
+import { recordUsage, userFromRequest, withinMonthlyQuota } from "../../auth";
 
 type QwenResponse = { choices?: Array<{ message?: { content?: unknown } }>; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown } };
 type TranslateRequest = { text?: unknown; terminology?: unknown; lectureId?: unknown; sessionId?: unknown; segmentId?: unknown };
@@ -36,6 +37,8 @@ function terminologyPrompt(value: unknown) {
 }
 
 export async function GET() {
+  const user = await userFromRequest();
+  if (!user) return json({ error: "请先登录。" }, 401);
   const env = await environment();
   return json({
     providers: {
@@ -48,6 +51,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const user = await userFromRequest(request);
+  if (!user) return json({ error: "请先登录。" }, 401);
   const body = await request.json().catch(() => ({})) as TranslateRequest;
   const checked = validateIncrementalRequest(body);
   if ("error" in checked) return json({ error: checked.error }, checked.status);
@@ -55,6 +60,7 @@ export async function POST(request: Request) {
   const env = await environment();
   const apiKey = env.QWEN_API_KEY || env.DASHSCOPE_API_KEY;
   if (!apiKey) return json({ error: "Qwen-MT refinement is not configured on the server." }, 503);
+  if (!(await withinMonthlyQuota(user, value.tokenEstimate))) return json({ error: "本月 API 配额已用尽，请联系管理员。" }, 429);
 
   try {
     const refined = await refiner.run(value, async () => {
@@ -78,6 +84,7 @@ export async function POST(request: Request) {
         outputTokens: typeof result.usage?.completion_tokens === "number" ? result.usage.completion_tokens : undefined,
       };
     });
+    if (!refined.cacheHit) await recordUsage(user.id, "translation", value.tokenEstimate + Math.ceil(String(refined.translation || "").length / 4));
     return json(refined);
   } catch {
     return json({ error: "Unable to reach Qwen-MT refinement." }, 502);

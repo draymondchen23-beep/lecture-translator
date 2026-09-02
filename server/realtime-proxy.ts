@@ -62,7 +62,27 @@ class QwenRelay {
     this.target = url.searchParams.get("target") || "zh";
   }
 
-  start() {
+  async start() {
+    const cookie = this.request.headers.cookie;
+    if (!cookie) {
+      send(this.client, { type: "error", message: "请先登录后再开始课堂。", recoverable: false });
+      this.client.close(1008, "authentication required");
+      return;
+    }
+    try {
+      const authUrl = process.env.LECTURE_APP_ORIGIN ? `${process.env.LECTURE_APP_ORIGIN.replace(/\/$/, "")}/api/auth/session` : "http://127.0.0.1:3001/api/auth/session";
+      const sessionResponse = await fetch(authUrl, { headers: { cookie }, signal: AbortSignal.timeout(3_000) });
+      const session = await sessionResponse.json().catch(() => ({})) as { user?: { role?: string } | null };
+      if (!sessionResponse.ok || !session.user || !["admin", "user"].includes(session.user.role || "")) {
+        send(this.client, { type: "error", message: "登录状态已失效，请重新登录。", recoverable: false });
+        this.client.close(1008, "authentication required");
+        return;
+      }
+    } catch {
+      send(this.client, { type: "error", message: "无法验证登录状态，请先启动应用服务。", recoverable: true });
+      this.client.close(1011, "authentication unavailable");
+      return;
+    }
     console.info("[CLIENT] Connecting", { source: this.source, target: this.target });
     this.client.on("message", (data, isBinary) => void this.onClientMessage(data, isBinary));
     this.client.on("close", () => this.close());

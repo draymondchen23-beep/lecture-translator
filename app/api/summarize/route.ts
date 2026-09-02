@@ -4,6 +4,7 @@ type QwenResponse = { choices?: Array<{ message?: { content?: unknown } }> };
 
 const MAX_TRANSCRIPT_LENGTH = 180_000;
 const DEFAULT_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+import { recordUsage, userFromRequest, withinMonthlyQuota } from "../../auth";
 
 function text(value: unknown) { return typeof value === "string" ? value.trim() : ""; }
 function strings(value: unknown) { return Array.isArray(value) ? value.map(text).filter(Boolean) : []; }
@@ -44,6 +45,8 @@ function notesPrompt(course: string, lecture: string, detail: string, segments: 
 }
 
 export async function POST(request: Request) {
+  const user = await userFromRequest(request);
+  if (!user) return Response.json({ error: "请先登录。" }, { status: 401 });
   const body = await request.json().catch(() => ({})) as RecordValue;
   const rawSegments = Array.isArray(body.segments) ? body.segments : [];
   const segments = rawSegments.map((value) => {
@@ -58,6 +61,8 @@ export async function POST(request: Request) {
   if (!segments.length) return Response.json({ error: "请至少完成一段课堂内容后再生成笔记。" }, { status: 400 });
   const length = segments.reduce((total, item) => total + item.source.length + item.translation.length, 0);
   if (length > MAX_TRANSCRIPT_LENGTH) return Response.json({ error: "课堂文本过长，请分节生成笔记。" }, { status: 413 });
+  const estimatedUnits = Math.ceil(length / 4);
+  if (!(await withinMonthlyQuota(user, estimatedUnits))) return Response.json({ error: "本月 API 配额已用尽，请联系管理员。" }, { status: 429 });
   const { env } = await import("cloudflare:workers");
   const config = env as Environment;
   const apiKey = config.QWEN_API_KEY || config.DASHSCOPE_API_KEY;
@@ -82,9 +87,10 @@ export async function POST(request: Request) {
     const result = await response.json().catch(() => ({})) as QwenResponse;
     const content = result.choices?.[0]?.message?.content;
     const parsed = typeof content === "string" ? JSON.parse(content.replace(/^```json\s*|\s*```$/g, "")) : content;
-    return Response.json({ summary: normalize(parsed) });
+    const summary = normalize(parsed);
+    await recordUsage(user.id, "summary", estimatedUnits + Math.ceil(JSON.stringify(summary).length / 4));
+    return Response.json({ summary });
   } catch {
     return Response.json({ error: "无法生成课堂笔记，请稍后重试。" }, { status: 502 });
   }
 }
-

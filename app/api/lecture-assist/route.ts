@@ -2,12 +2,17 @@ type Environment = { QWEN_API_KEY?: string; DASHSCOPE_API_KEY?: string; QWEN_API
 type RequestBody = { text?: unknown; action?: unknown };
 type QwenResponse = { choices?: Array<{ message?: { content?: unknown } }> };
 const DEFAULT_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
+import { recordUsage, userFromRequest, withinMonthlyQuota } from "../../auth";
 
 export async function POST(request: Request) {
+  const user = await userFromRequest(request);
+  if (!user) return Response.json({ error: "请先登录。" }, { status: 401 });
   const body = await request.json().catch(() => ({})) as RequestBody;
   const text = typeof body.text === "string" ? body.text.trim() : "";
   const action = ["explain", "simplify", "example", "term"].includes(String(body.action)) ? String(body.action) : "explain";
   if (!text || text.length > 8_000) return Response.json({ error: "请选择一段课堂内容。" }, { status: 400 });
+  const estimatedUnits = Math.ceil(text.length / 4);
+  if (!(await withinMonthlyQuota(user, estimatedUnits))) return Response.json({ error: "本月 API 配额已用尽，请联系管理员。" }, { status: 429 });
   const { env } = await import("cloudflare:workers");
   const config = env as Environment;
   const apiKey = config.QWEN_API_KEY || config.DASHSCOPE_API_KEY;
@@ -36,9 +41,12 @@ export async function POST(request: Request) {
     if (!response.ok) return Response.json({ error: "AI explanation is temporarily unavailable." }, { status: 502 });
     const result = await response.json().catch(() => ({})) as QwenResponse;
     const answer = result.choices?.[0]?.message?.content;
-    return typeof answer === "string" ? Response.json({ answer }) : Response.json({ error: "AI returned an unreadable answer." }, { status: 502 });
+    if (typeof answer === "string") {
+      await recordUsage(user.id, "assist", estimatedUnits + Math.ceil(answer.length / 4));
+      return Response.json({ answer });
+    }
+    return Response.json({ error: "AI returned an unreadable answer." }, { status: 502 });
   } catch {
     return Response.json({ error: "Unable to reach AI explanation service." }, { status: 502 });
   }
 }
-

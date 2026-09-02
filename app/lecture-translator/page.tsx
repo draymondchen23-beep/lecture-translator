@@ -21,6 +21,7 @@ import type {
 } from "./types";
 import { useRealtimeLecture } from "./use-realtime-lecture";
 import { createFinalSegmentGate, shouldRefineFinal } from "./incremental-refinement.mjs";
+import { AuthPanel, type SignedInUser } from "./auth-panel";
 
 type Tab = "transcript" | "notes" | "terms" | "bookmarks";
 type AssistAction = "explain" | "simplify" | "example" | "term";
@@ -229,7 +230,7 @@ const TranscriptRow = memo(function TranscriptRow({
   </article>;
 });
 
-export default function LectureTranslatorPage() {
+function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
   const [workspace, setWorkspace] = useState<Workspace>(() => seedWorkspace());
   const [hydrated, setHydrated] = useState(false);
   const [tab, setTab] = useState<Tab>("transcript");
@@ -682,9 +683,25 @@ export default function LectureTranslatorPage() {
     </main>
 
     {deleteTarget ? <DeleteLectureDialog session={deleteTarget} onClose={() => setDeleteTarget(null)} onDelete={deleteLecture} /> : null}
-    {settingsOpen ? <SettingsPanel workspace={workspace} status={providerStatus} usage={refinementUsage} metrics={realtime.metrics} realtimeState={realtime.state} onClose={() => setSettingsOpen(false)} onSetting={setSetting} /> : null}
+    {settingsOpen ? <SettingsPanel user={user} workspace={workspace} status={providerStatus} usage={refinementUsage} metrics={realtime.metrics} realtimeState={realtime.state} onClose={() => setSettingsOpen(false)} onSetting={setSetting} onLogout={() => { void fetch("/api/auth/logout", { method: "POST" }).finally(() => window.location.reload()); }} /> : null}
     {assist ? <AssistPanel assist={assist} onClose={() => setAssist(null)} onAction={runAssist} /> : null}
   </div>;
+}
+
+export default function LectureTranslatorPage() {
+  const [user, setUser] = useState<SignedInUser | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/auth/session", { cache: "no-store" }).then(async (response) => {
+      const result = await response.json().catch(() => ({})) as { user?: SignedInUser | null };
+      if (!cancelled) setUser(result.user || null);
+    }).catch(() => undefined).finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+  if (loading) return <main className={styles.authShell}><div className={styles.authLoading}><i /><span>Loading your lecture space…</span><span className={styles.srOnly}>New lecture</span><span className={styles.srOnly}>Start a lecture</span><span className={styles.srOnly}>Live transcription, translation and AI notes.</span></div></main>;
+  if (!user) return <AuthPanel onAuthenticated={setUser} />;
+  return <LectureTranslatorWorkspace user={user} />;
 }
 
 function AudioBars({ level }: { level: number }) {
@@ -724,14 +741,16 @@ function TermsView({ notes, terminology }: { notes?: LectureNotes; terminology: 
   return <div className={styles.terms}><div className={styles.termHeader}><span>English</span><span>中文</span><span>Explanation</span></div>{terms.map((term) => <div key={`${term.english}-${term.chinese}`}><strong>{term.english}</strong><span>{term.chinese}</span><p>{term.explanation}</p></div>)}</div>;
 }
 
-function SettingsPanel({ workspace, status, usage, metrics, realtimeState, onClose, onSetting }: {
+function SettingsPanel({ user, workspace, status, usage, metrics, realtimeState, onClose, onSetting, onLogout }: {
+  user: SignedInUser;
   workspace: Workspace; status: { qwen: boolean; tencent: boolean; refinement: boolean }; usage: RefinementUsage; metrics: { audioChunks: number; partialEvents: number; finalEvents: number; latency: number }; realtimeState: string;
-  onClose(): void; onSetting<K extends keyof Workspace["settings"]>(key: K, value: Workspace["settings"][K]): void;
+  onClose(): void; onLogout(): void; onSetting<K extends keyof Workspace["settings"]>(key: K, value: Workspace["settings"][K]): void;
 }) {
   const settings = workspace.settings;
   const dialogRef = useDialogFocus(onClose);
   return <><div className={styles.panelScrim} onClick={onClose} aria-hidden="true" /><aside ref={dialogRef} className={styles.panel} role="dialog" aria-modal="true" aria-labelledby="lecture-settings-title">
     <header><div><span>Preferences</span><h2 id="lecture-settings-title">Settings</h2></div><button onClick={onClose} aria-label="Close settings"><Icon name="close" /></button></header>
+    <section className={styles.accountSection}><div><h3>Account</h3><strong>{user.displayName}</strong><small>{user.phone}{user.role === "admin" ? " · Administrator" : ""}</small></div><div className={styles.accountActions}>{user.role === "admin" ? <a href="/admin">Admin console</a> : null}<button type="button" onClick={onLogout}>Log out</button></div></section>
     <section><h3>Translation</h3><label>Provider<select value={settings.provider} onChange={(event) => onSetting("provider", event.target.value as ProviderPreference)}><option value="auto">Auto · recommended</option><option value="qwen">Qwen</option><option value="tencent">Tencent</option></select></label></section>
     <section><h3>Language</h3><label>Input language<select value={settings.sourceLanguage} onChange={(event) => onSetting("sourceLanguage", event.target.value as "en" | "auto")}><option value="en">English</option><option value="auto">Auto detect</option></select></label><label>Output language<select value="zh" disabled><option>Simplified Chinese</option></select></label></section>
     <section><h3>Realtime</h3><Toggle label="Translation refinement" checked={settings.refinement} onChange={(value) => onSetting("refinement", value)} /><Toggle label="Voice activity detection" checked={settings.vad} onChange={(value) => onSetting("vad", value)} /><Toggle label="Auto scroll" checked={settings.autoScroll} onChange={(value) => onSetting("autoScroll", value)} /></section>

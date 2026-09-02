@@ -493,6 +493,58 @@
 
 .mobileMenu, .scrim { display: none; }
 
+.authShell { min-height: 100dvh; position: relative; isolation: isolate; display: grid; place-items: center; padding: 24px; overflow: hidden; background: #050608; color: #f1f2ee; }
+.authCard { position: relative; z-index: 1; width: min(420px, 100%); padding: 36px; border: 1px solid rgba(245, 247, 242, .14); border-radius: 24px; background: rgba(15, 17, 18, .64); backdrop-filter: blur(26px) saturate(130%); -webkit-backdrop-filter: blur(26px) saturate(130%); box-shadow: 0 28px 90px rgba(0, 0, 0, .28), inset 0 1px rgba(255, 255, 255, .12); }
+.authMark { width: 42px; height: 42px; margin-bottom: 24px; display: grid; place-items: center; border-radius: 13px; color: #07110c; background: #9bd7b7; box-shadow: inset 0 1px rgba(255, 255, 255, .42), 0 8px 20px rgba(83, 166, 121, .18); }
+.authMark svg { width: 28px; height: 28px; }
+.authEyebrow { margin: 0 0 8px; color: #9bd7b7; font-size: 10px; font-weight: 650; letter-spacing: .11em; text-transform: uppercase; }
+.authCard h1 { margin: 0; font-size: clamp(26px, 6vw, 34px); line-height: 1.08; font-weight: 560; letter-spacing: -.04em; }
+.authIntro { margin: 11px 0 26px; color: #b0b4ac; font-size: 13px; line-height: 1.6; }
+.authForm { display: grid; gap: 15px; }
+.authForm label { display: grid; gap: 7px; color: #b0b4ac; font-size: 11px; }
+.authForm input { width: 100%; height: 44px; padding: 0 12px; border: 1px solid rgba(245, 247, 242, .15); border-radius: 11px; outline: none; color: #f1f2ee; background: rgba(255, 255, 255, .07); transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
+.authForm input::placeholder { color: #7b8078; }
+.authForm input:focus { border-color: #9bd7b7; background: rgba(255, 255, 255, .10); box-shadow: 0 0 0 3px rgba(155, 215, 183, .14); }
+.optional { margin-left: 5px; color: #7b8078; font-size: 10px; }
+.authError { margin: -2px 0 0; color: #e4a19a; font-size: 11px; line-height: 1.5; }
+.authSubmit { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; padding: 0 16px; border: 1px solid rgba(155, 215, 183, .42); border-radius: 11px; color: #07110c; background: #9bd7b7; font-size: 12px; font-weight: 620; text-decoration: none; box-shadow: 0 8px 22px rgba(83, 166, 121, .18); transition: transform .16s ease, background .16s ease, box-shadow .16s ease; }
+.authSubmit:hover { transform: translateY(-1px); background: #b2e5c8; box-shadow: 0 12px 28px rgba(83, 166, 121, .24); }
+.authSubmit:disabled { cursor: wait; opacity: .62; transform: none; }
+.authSwitch { margin: 20px auto 0; display: block; padding: 0; color: #9bd7b7; background: transparent; font-size: 11px; }
+.authSwitch:hover { text-decoration: underline; text-underline-offset: 3px; }
+.authLoading { position: relative; z-index: 1; display: grid; place-items: center; gap: 14px; color: #b0b4ac; font-size: 12px; }
+.authLoading i { width: 22px; height: 22px; border: 2px solid rgba(245, 247, 242, .2); border-top-color: #9bd7b7; border-radius: 50%; animation: spin .8s linear infinite; }
+.srOnly { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.adminShell { min-height: 100dvh; position: relative; z-index: 1; padding: 56px max(24px, 6vw) 80px; background: #050608; color: #f1f2ee; }
+.adminHeader, .adminSection { width: min(960px, 100%); margin-inline: auto; }
+.adminHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 28px; margin-bottom: 36px; }
+.adminHeader h1 { margin: 0; font-size: clamp(30px, 5vw, 48px); letter-spacing: -.045em; font-weight: 560; }
+.adminHeader p:not(.authEyebrow) { margin: 10px 0 0; color: #b0b4ac; font-size: 13px; }
+.adminHeader > a { color: #9bd7b7; font-size: 12px; text-decoration: none; }
+.adminSection { margin-bottom: 20px; padding: 26px; border: 1px solid rgba(245, 247, 242, .12); border-radius: 18px; background: rgba(15, 17, 18, .62); backdrop-filter: blur(20px); }
+.adminSectionHead { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
+.adminSection h2 { margin: 0; font-size: 17px; font-weight: 560; }
+.adminSection p { margin: 7px 0 0; color: #93968f; font-size: 11px; line-height: 1.5; }
+.inviteCode { display: block; margin-top: 20px; padding: 14px 16px; border: 1px solid rgba(155, 215, 183, .28); border-radius: 11px; color: #b2e5c8; background: rgba(155, 215, 183, .08); font-size: 18px; letter-spacing: .1em; }
+.adminNotice { color: #9bd7b7 !important; }
+.userTable { margin-top: 20px; border-top: 1px solid rgba(245, 247, 242, .10); }
+.userRow { display: grid; grid-template-columns: minmax(0, 1fr) 150px auto; align-items: center; gap: 16px; padding: 16px 0; border-bottom: 1px solid rgba(245, 247, 242, .08); }
+.userRow strong, .userRow small { display: block; }
+.userRow strong { font-size: 13px; font-weight: 560; }
+.userRow small { margin-top: 4px; color: #93968f; font-size: 10px; }
+.userRow label { display: grid; gap: 5px; color: #93968f; font-size: 10px; }
+.userRow input { width: 100%; height: 34px; padding: 0 8px; border: 1px solid rgba(245, 247, 242, .14); border-radius: 8px; color: #f1f2ee; background: rgba(255, 255, 255, .06); }
+.userRow > button { min-height: 34px; padding: 0 12px; border: 1px solid rgba(245, 247, 242, .16); border-radius: 8px; color: #b0b4ac; background: rgba(255, 255, 255, .06); font-size: 11px; }
+.userRow > button:hover { color: #f1f2ee; background: rgba(255, 255, 255, .11); }
+.accountSection { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.accountSection h3 { margin-bottom: 7px; }
+.accountSection strong, .accountSection small { display: block; }
+.accountSection strong { font-size: 13px; font-weight: 580; }
+.accountSection small { margin-top: 4px; color: var(--text-3); font-size: 10px; }
+.accountActions { display: flex; align-items: center; gap: 12px; }
+.accountActions a, .accountActions button { color: var(--accent); background: transparent; font-size: 11px; text-decoration: none; }
+.accountActions button { color: var(--text-3); }
+
 @media (max-width: 980px) {
   .app { grid-template-columns: 228px minmax(0, 1fr); }
   .appSidebarCollapsed { grid-template-columns: 64px minmax(0, 1fr); }
@@ -517,6 +569,14 @@
   .sidebarOpen { transform: translateX(0); }
   .sidebarClose { display: grid; place-items: center; }
   .historyMore { opacity: 1; }
+  .authCard { padding: 28px 22px; }
+  .adminShell { padding: 34px 16px 54px; }
+  .adminHeader, .adminSectionHead { display: block; }
+  .adminHeader > a { display: inline-block; margin-top: 16px; }
+  .adminSectionHead .authSubmit { margin-top: 18px; }
+  .userRow { grid-template-columns: 1fr auto; }
+  .userRow label { grid-column: 1; }
+  .userRow > button { grid-column: 2; grid-row: 2; }
   .scrim { display: block; position: fixed; inset: 0; z-index: 35; background: rgba(10, 12, 10, .26); }
   .mobileMenu { display: grid; place-items: center; position: fixed; top: 16px; left: 14px; z-index: 30; width: 38px; height: 38px; border: 1px solid var(--border); border-radius: 11px; background: var(--glass); backdrop-filter: blur(14px); }
   .header { width: 100%; padding: 20px 18px 14px 64px; gap: 12px; }
