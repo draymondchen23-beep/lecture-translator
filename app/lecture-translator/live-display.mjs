@@ -55,6 +55,29 @@ export function visibleContentRect(container, dockTop, gap = 12) {
   return { top: container.top, height: Math.max(0, bottom - container.top) };
 }
 
+/** Compute the bounded scrollTop that puts a row at the visible center. */
+export function centeredScrollTop({
+  currentScrollTop,
+  scrollHeight,
+  clientHeight,
+  containerTop,
+  targetTop,
+  targetHeight,
+  dockTop,
+  stickyTop = 0,
+  gap = 12,
+}) {
+  const visibleTop = containerTop + Math.max(0, stickyTop);
+  const visibleBottom = Math.min(containerTop + clientHeight, dockTop - gap);
+  const visibleHeight = Math.max(0, visibleBottom - visibleTop);
+  if (!visibleHeight) return Math.max(0, Math.min(currentScrollTop, scrollHeight - clientHeight));
+  const targetCenter = targetTop + targetHeight / 2;
+  const visibleCenter = visibleTop + visibleHeight / 2;
+  const desired = currentScrollTop + targetCenter - visibleCenter;
+  const maxScrollTop = Math.max(0, scrollHeight - clientHeight);
+  return Math.max(0, Math.min(maxScrollTop, desired));
+}
+
 const ENDS = {
   en: new Set([".", "!", "?"]),
   zh: new Set(["。", "！", "？"]),

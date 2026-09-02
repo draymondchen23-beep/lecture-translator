@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { bestTranscript, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, planInterimTranslation, previewResultAction, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, splitWords, stableWords } from "./browser-incremental.mjs";
+import { bestTranscript, collectLiveTranslationWords, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, splitWords, stableWords, takeLiveTranslationChunk } from "./browser-incremental.mjs";
 import type { LectureState, ProviderPreference, RealtimeServerEvent } from "./types";
 
 type Options = {
@@ -41,9 +41,9 @@ type FallbackLiveBlock = {
   translatedText: string;
   previousWords: string[];
   stableWords: string[];
-  interimCount: number;
-  lastPreviewText: string;
-  pendingPreviewText: string;
+  liveCommittedWordCount: number;
+  pendingPreviewWords: string[];
+  liveContext: string;
   previewWorkerQueued: boolean;
   activePreviewText: string;
   previewTask: Promise<void> | null;
@@ -245,22 +245,24 @@ export function useRealtimeLecture(options: Options) {
     const sessionId = fallbackSessionRef.current;
     const epoch = fallbackEpochRef.current;
     const task = fallbackPreviewQueueRef.current.then(async () => {
-      while (epoch === fallbackEpochRef.current && !block.finalRequested && block.pendingPreviewText) {
-        const sourceText = block.pendingPreviewText;
-        block.pendingPreviewText = "";
+      while (epoch === fallbackEpochRef.current && !block.finalRequested && block.pendingPreviewWords.length) {
+        const nextChunk = takeLiveTranslationChunk(block.pendingPreviewWords);
+        if (!nextChunk) break;
+        const sourceText = nextChunk.text;
+        block.pendingPreviewWords = nextChunk.remainingWords;
         block.activePreviewText = sourceText;
         try {
           setState("PROCESSING");
-          const translated = await translateFallback(sessionId, sourceText, fallbackRequestSegmentId(sessionId, block.sequence, block.requestIndex++), "accurate", block.context);
+          const context = block.requestIndex === 0 ? block.context : contextTail(block.liveContext, 120);
+          const translated = await translateFallback(sessionId, sourceText, fallbackRequestSegmentId(sessionId, block.sequence, block.requestIndex++), "fast", context);
           if (epoch !== fallbackEpochRef.current) return;
+          block.liveContext = contextTail(`${block.liveContext} ${sourceText}`, 120);
           block.interimSource = sourceText;
           block.interimTranslation = translated;
-          block.interimQuality = "accurate";
-          const action = previewResultAction(block);
-          if (action === "discard") return;
-          if (action === "drain") continue;
-          block.translatedText = translated;
-          emit({ type: "translation.partial", text: translated, sequence: block.sequence, startedAt: block.startedAt });
+          block.interimQuality = "fast";
+          if (block.finalRequested) return;
+          block.translatedText = `${block.translatedText} ${translated}`.trim();
+          emit({ type: "translation.partial", text: block.translatedText, sequence: block.sequence, startedAt: block.startedAt });
         } catch (error) {
           if (epoch !== fallbackEpochRef.current) return;
           emit({ type: "error", message: error instanceof Error ? error.message : "Translation failed.", recoverable: true });
@@ -359,7 +361,7 @@ export function useRealtimeLecture(options: Options) {
           fallbackFinalIndexesRef.current.add(index);
           const block = fallbackBlockRef.current || {
             sequence: fallbackSequenceRef.current++, startedAt: fallbackStartedAtRef.current || Date.now(), sourceText: text,
-            translatedText: "", previousWords: [], stableWords: [], interimCount: 0, lastPreviewText: "", pendingPreviewText: "", previewWorkerQueued: false, activePreviewText: "", previewTask: null, requestIndex: 0,
+            translatedText: "", previousWords: [], stableWords: [], liveCommittedWordCount: 0, pendingPreviewWords: [], liveContext: "", previewWorkerQueued: false, activePreviewText: "", previewTask: null, requestIndex: 0,
             context: fallbackContextRef.current, interimSource: "", interimTranslation: "", interimQuality: null, finalSource: null, finalRequested: false,
           };
           if (block.finalRequested) continue;
@@ -379,7 +381,7 @@ export function useRealtimeLecture(options: Options) {
         if (!fallbackStartedAtRef.current) fallbackStartedAtRef.current = Date.now();
         const block = fallbackBlockRef.current || {
           sequence: fallbackSequenceRef.current++, startedAt: fallbackStartedAtRef.current, sourceText: "",
-          translatedText: "", previousWords: [], stableWords: [], interimCount: 0, lastPreviewText: "", pendingPreviewText: "", previewWorkerQueued: false, activePreviewText: "", previewTask: null, requestIndex: 0,
+          translatedText: "", previousWords: [], stableWords: [], liveCommittedWordCount: 0, pendingPreviewWords: [], liveContext: "", previewWorkerQueued: false, activePreviewText: "", previewTask: null, requestIndex: 0,
           context: fallbackContextRef.current, interimSource: "", interimTranslation: "", interimQuality: null, finalSource: null, finalRequested: false,
         };
         const interimWords = splitWords(interim);
@@ -389,11 +391,10 @@ export function useRealtimeLecture(options: Options) {
         fallbackBlockRef.current = block;
         emit({ type: "source.partial", text: interim, sequence: block.sequence, startedAt: block.startedAt });
         const stableText = block.stableWords.join(" ");
-        const plan = planInterimTranslation({ sourceText: block.sourceText, stableText, interimCount: block.interimCount, lastPreviewText: block.lastPreviewText });
-        if (plan) {
-          block.interimCount += 1;
-          block.lastPreviewText = plan.text;
-          block.pendingPreviewText = plan.text;
+        const liveWords = collectLiveTranslationWords({ sourceText: block.sourceText, stableText, committedWordCount: block.liveCommittedWordCount });
+        if (liveWords.words.length) {
+          block.liveCommittedWordCount = liveWords.committedWordCount;
+          block.pendingPreviewWords.push(...liveWords.words);
           queueFallbackInterim(block);
         }
         setState("SPEAKING");

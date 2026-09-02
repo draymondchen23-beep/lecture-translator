@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { reducePartialEvent } from "../app/lecture-translator/partial-events.mjs";
-import { advanceDisplayedText, commonPrefixByCodePoint, progressiveDelay, reconcileDisplayedPrefix, shouldRecenter, splitSentences, visibleContentRect } from "../app/lecture-translator/live-display.mjs";
+import { advanceDisplayedText, centeredScrollTop, commonPrefixByCodePoint, progressiveDelay, reconcileDisplayedPrefix, shouldRecenter, splitSentences, visibleContentRect } from "../app/lecture-translator/live-display.mjs";
 
 test("late translations and finals cannot replace a newer live block", () => {
   let partial = { source: "first", translation: "第一", sequence: 3 };
@@ -39,6 +39,13 @@ test("center recentering ignores small character-growth drift", () => {
   assert.equal(shouldRecenter(container, { top: 350, height: 100 }), false);
   assert.equal(shouldRecenter(container, { top: 390, height: 100 }), true);
   assert.deepEqual(visibleContentRect(container, 620), { top: 100, height: 508 });
+});
+
+test("centered column scroll is dock-aware and bounded by runway", () => {
+  const base = { currentScrollTop: 300, scrollHeight: 1_200, clientHeight: 600, containerTop: 100, targetHeight: 40, dockTop: 620, stickyTop: 48 };
+  assert.equal(centeredScrollTop({ ...base, targetTop: 400 }), 342);
+  assert.equal(centeredScrollTop({ ...base, targetTop: 1_000 }), 600);
+  assert.equal(centeredScrollTop({ ...base, targetTop: 50 }), 0);
 });
 
 test("sentence display splits English and Chinese without dropping closers or an unfinished tail", () => {

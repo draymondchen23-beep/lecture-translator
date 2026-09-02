@@ -8,48 +8,29 @@ export function stableWords(previous, current, stable) {
   return length > stable.length ? current.slice(0, length) : stable;
 }
 
-export function uncommittedTail(source, committed) {
-  return splitWords(source).slice(splitWords(committed).length).join(" ");
-}
-
-export function coalescePendingWords(pending, next) {
-  return `${pending} ${next}`.trim();
-}
-
-export const MAX_INTERIM_TRANSLATIONS = 3;
 export const MIN_PREVIEW_WORDS = 3;
-export const PREVIEW_GROWTH_WORDS = 6;
+export const LIVE_TRANSLATION_CHUNK_WORDS = 4;
 
 export function hasSemanticBoundary(text) {
   return /[.!?]["')\]]*$/.test(text.trim());
 }
 
-export function isReadyStablePhrase(text) {
-  return hasSemanticBoundary(text);
+export function collectLiveTranslationWords({ sourceText = "", stableText = "", committedWordCount = 0 }) {
+  const sourceWords = splitWords(sourceText);
+  const stable = splitWords(stableText);
+  const observed = stable.length >= MIN_PREVIEW_WORDS ? stable : sourceWords;
+  const start = Math.min(committedWordCount, observed.length);
+  return {
+    words: observed.slice(start),
+    committedWordCount: Math.max(committedWordCount, observed.length),
+  };
 }
 
-export function planInterimTranslation({ sourceText = "", stableText, interimCount = 0, lastPreviewText = "", maxInterims = MAX_INTERIM_TRANSLATIONS }) {
-  const source = sourceText.trim();
-  const stable = stableText.trim();
-  // Chrome can promote the first interim result straight to final, before a
-  // second observation exists to establish a stable prefix. Use that complete
-  // current interim once so live translation does not wait for pause/final.
-  const candidate = stable || source;
-  if (!candidate || interimCount >= maxInterims) return null;
-  const wordCount = splitWords(candidate).length;
-  if (wordCount < MIN_PREVIEW_WORDS || candidate === lastPreviewText) return null;
-  if (hasSemanticBoundary(candidate)) return { text: candidate, mode: "replace" };
-  const previousWords = splitWords(lastPreviewText).length;
-  // `stable` deliberately trails the latest browser interim result by one
-  // observation, so requiring it to equal sourceText suppresses short live
-  // previews until Chrome emits a final result.
-  if (!previousWords || wordCount - previousWords >= PREVIEW_GROWTH_WORDS) return { text: candidate, mode: "replace" };
-  return null;
-}
-
-export function previewResultAction({ finalRequested, pendingPreviewText }) {
-  if (finalRequested) return "discard";
-  return pendingPreviewText ? "drain" : "publish";
+export function takeLiveTranslationChunk(pendingWords, maxWords = LIVE_TRANSLATION_CHUNK_WORDS) {
+  const boundary = pendingWords.findIndex((word) => hasSemanticBoundary(word));
+  const count = boundary >= 0 ? boundary + 1 : pendingWords.length >= maxWords ? maxWords : 0;
+  if (!count) return null;
+  return { text: pendingWords.slice(0, count).join(" "), remainingWords: pendingWords.slice(count) };
 }
 
 export function contextTail(source, maxChars = 400) {
@@ -58,19 +39,6 @@ export function contextTail(source, maxChars = 400) {
   const tail = text.slice(-maxChars);
   const boundary = tail.search(/\s/);
   return boundary >= 0 ? tail.slice(boundary).trim() : tail;
-}
-
-export function contextForFastRequest(context, requestIndex) {
-  return requestIndex === 0 ? context : "";
-}
-
-export function applyFinalCorrection(accumulated, correction) {
-  return correction.trim() || accumulated;
-}
-
-export function nextFallbackRequestKind({ finalRequested, finalSource, pendingSource }) {
-  if (finalRequested && finalSource) return "accurate";
-  return pendingSource ? "fast" : null;
 }
 
 export function shouldProcessBrowserResult({ fallbackActive, paused, intentionalClose }) {

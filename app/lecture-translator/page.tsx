@@ -24,7 +24,7 @@ import { useRealtimeLecture } from "./use-realtime-lecture";
 import { reducePartialEvent } from "./partial-events.mjs";
 import { createFinalSegmentGate, shouldRefineFinal } from "./incremental-refinement.mjs";
 import { AuthPanel, type SignedInUser } from "./auth-panel";
-import { shouldRecenter, splitSentences, visibleContentRect } from "./live-display.mjs";
+import { centeredScrollTop, shouldRecenter, splitSentences, visibleContentRect } from "./live-display.mjs";
 import { useProgressiveText } from "./use-progressive-text";
 
 type Tab = "transcript" | "notes" | "terms" | "bookmarks";
@@ -463,14 +463,22 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
     if (!target || !container) return;
     const containerRect = container.getBoundingClientRect();
     const dockTop = dockRef.current?.getBoundingClientRect().top ?? containerRect.bottom;
-    const visibleRect = visibleContentRect(containerRect, dockTop);
     const targetRect = target.getBoundingClientRect();
-    if (!shouldRecenter(visibleRect, targetRect)) return;
+    const stickyHeader = container.firstElementChild instanceof HTMLElement ? container.firstElementChild : null;
+    const top = centeredScrollTop({
+      currentScrollTop: container.scrollTop,
+      scrollHeight: container.scrollHeight,
+      clientHeight: container.clientHeight,
+      containerTop: containerRect.top,
+      targetTop: targetRect.top,
+      targetHeight: targetRect.height,
+      dockTop,
+      stickyTop: stickyHeader?.getBoundingClientRect().height ?? 0,
+    });
     const previousTimer = columnProgrammaticRef.current[column];
     if (previousTimer !== null) window.clearTimeout(previousTimer);
     columnProgrammaticRef.current[column] = window.setTimeout(() => { columnProgrammaticRef.current[column] = null; }, behavior === "smooth" ? 700 : 80);
-    const offset = (targetRect.top + targetRect.height / 2) - (visibleRect.top + visibleRect.height / 2);
-    container.scrollTo({ top: Math.max(0, container.scrollTop + offset), behavior: behavior === "auto" ? "instant" : behavior });
+    container.scrollTo({ top, behavior: behavior === "auto" ? "instant" : behavior });
   }, []);
 
   const scheduleColumnScroll = useCallback((column: "source" | "translation", behavior: ScrollBehavior = "auto") => {
