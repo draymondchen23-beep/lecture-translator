@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { bestTranscript, contextTail, fallbackFinalCorrectionSegmentId, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately } from "../app/lecture-translator/browser-incremental.mjs";
+import { appendAccurateTranslation, bestTranscript, completedSentencePrefix, contextTail, fallbackFinalCorrectionSegmentId, newCompletedSentenceText, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately } from "../app/lecture-translator/browser-incremental.mjs";
 
 test("final correction request ids are unique per block", () => {
   assert.notEqual(fallbackFinalCorrectionSegmentId("session", 1), fallbackFinalCorrectionSegmentId("session", 2));
+});
+
+test("only completed stable sentences are queued once and final reuses them", () => {
+  const first = "First complete sentence.";
+  assert.equal(completedSentencePrefix(`${first} unfinished tail`), first);
+  assert.equal(newCompletedSentenceText({ sourceText: `${first} unfinished tail` }), first);
+  assert.equal(newCompletedSentenceText({ sourceText: `${first} unfinished tail`, requestedSourcePrefix: first }), "");
+  assert.equal(newCompletedSentenceText({ sourceText: `${first} Second complete sentence.`, requestedSourcePrefix: first }), "Second complete sentence.");
+  assert.equal(appendAccurateTranslation("第一句。", "第二句。"), "第一句。第二句。");
 });
 
 test("context is limited to the preceding finalized block tail", () => {

@@ -31,10 +31,13 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(hook, /shouldStartBrowserFallbackImmediately\(window\.location\.hostname\)/);
   assert.match(hook, /fetch\("\/api\/translate"/);
   assert.match(hook, /fallbackFinalCorrectionSegmentId/);
-  assert.match(hook, /fallbackFinalCorrectionSegmentId\(sessionId, block\.sequence\), "accurate", block\.context/);
-  assert.match(hook, /const translated = await translateFallback\(sessionId, sourceText, fallbackFinalCorrectionSegmentId\(sessionId, block\.sequence\), "accurate", block\.context\)/);
+  assert.match(hook, /quality: "accurate"/);
+  assert.match(hook, /fallbackRequestSegmentId\(sessionId, block\.sequence, block\.requestIndex\+\+\), context/);
+  assert.match(hook, /newCompletedSentenceText\(\{ sourceText: stableText, requestedSourcePrefix: block\.requestedSourcePrefix \}\)/);
+  assert.match(hook, /await block\.previewTask/);
+  assert.match(hook, /block\.translatedSourcePrefix !== sourceText/);
   assert.equal((hook.match(/fallbackFinalCorrectionSegmentId\(sessionId, block\.sequence\)/g) || []).length, 1);
-  assert.doesNotMatch(hook, /fallbackRequestSegmentId|queueFallbackInterim|"fast"/);
+  assert.doesNotMatch(hook, /queueFallbackInterim|"fast"/);
   assert.ok((hook.match(/fallbackContextRef\.current = ""/g) || []).length >= 2);
   assert.match(hook, /url\.searchParams\.set\("provider", "qwen"\)/);
   assert.match(hook, /hostname}:3002/);
