@@ -93,6 +93,7 @@ export async function ensureAdmin() {
   const config = environment();
   const phone = normalizePhone(config.AUTH_ADMIN_PHONE || "");
   const password = config.AUTH_ADMIN_PASSWORD || "";
+  console.info("[AUTH] admin config", { phoneLoaded: Boolean(config.AUTH_ADMIN_PHONE), passwordLoaded: Boolean(config.AUTH_ADMIN_PASSWORD), dbLoaded: Boolean((env as { DB?: unknown }).DB) });
   if (!isPhone(phone) || password.length < 8) return null;
   const db = getDb();
   const existing = await db.select().from(users).where(eq(users.phone, phone)).limit(1);
