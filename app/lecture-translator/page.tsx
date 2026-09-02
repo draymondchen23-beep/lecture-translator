@@ -873,8 +873,13 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
         userScrollLockRef.current = false;
         setAutoFollowing(true);
         setColumnFollowing({ source: true, translation: true });
-        scrollLiveIntoView("smooth");
-        window.requestAnimationFrame(() => { scrollColumnIntoView("source", "smooth"); scrollColumnIntoView("translation", "smooth"); });
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            scrollLiveIntoView("smooth");
+            scrollColumnIntoView("source", "smooth");
+            scrollColumnIntoView("translation", "smooth");
+          });
+        });
       }}>↓ Jump to live</button> : null}
       {notice ? <div className={styles.toast} role="status">{notice}</div> : null}
 

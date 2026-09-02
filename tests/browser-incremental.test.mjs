@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { bestTranscript, collectLiveTranslationWords, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, hasSemanticBoundary, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, splitWords, stableWords, takeLiveTranslationChunk } from "../app/lecture-translator/browser-incremental.mjs";
+import { appendUniqueTranslation, bestTranscript, collectLiveTranslationWords, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, hasSemanticBoundary, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, splitWords, stableWords, takeLiveTranslationChunk } from "../app/lecture-translator/browser-incremental.mjs";
 
 test("stable prefixes yield a new interim chunk without a timer", () => {
   let stable = [];
@@ -35,6 +35,13 @@ test("a long live block produces unique linear fast chunks before finalization",
   }
   assert.ok(chunks.length > 3);
   assert.deepEqual(chunks.flatMap(splitWords), words);
+});
+
+test("live Chinese appends only the untranslated suffix", () => {
+  assert.equal(appendUniqueTranslation("这是第一段", "第一段接着说"), "这是第一段接着说");
+  assert.equal(appendUniqueTranslation("这是第一段接着说", "这是第一段接着说然后"), "这是第一段接着说然后");
+  assert.equal(appendUniqueTranslation("这是第一段", "第一段"), "这是第一段");
+  assert.equal(appendUniqueTranslation("这是完整的一句翻译", "完整的一句翻译"), "这是完整的一句翻译");
 });
 
 test("context is limited to the preceding finalized block tail", () => {

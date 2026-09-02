@@ -33,6 +33,24 @@ export function takeLiveTranslationChunk(pendingWords, maxWords = LIVE_TRANSLATI
   return { text: pendingWords.slice(0, count).join(" "), remainingWords: pendingWords.slice(count) };
 }
 
+export function appendUniqueTranslation(accumulated = "", next = "") {
+  const current = accumulated.trim();
+  const incoming = next.trim();
+  if (!current || !incoming) return current || incoming;
+  // Some MT responses echo the entire preview that was already appended
+  // instead of returning only the requested delta. Treat an exact echo as a
+  // no-op before looking for a suffix/prefix overlap.
+  if (current.includes(incoming) && incoming.length >= 4) return current;
+  const currentChars = Array.from(current);
+  const incomingChars = Array.from(incoming);
+  for (let length = Math.min(currentChars.length, incomingChars.length); length > 0; length -= 1) {
+    if (currentChars.slice(-length).join("") === incomingChars.slice(0, length).join("")) {
+      return `${current}${incomingChars.slice(length).join("")}`;
+    }
+  }
+  return `${current}${incoming}`;
+}
+
 export function contextTail(source, maxChars = 400) {
   const text = source.trim();
   if (text.length <= maxChars) return text;
