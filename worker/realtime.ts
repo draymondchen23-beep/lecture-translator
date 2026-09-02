@@ -36,6 +36,10 @@ function errorText(value: unknown, fallback: string) {
 }
 
 export async function handleRealtimeUpgrade(request: Request, env: RealtimeEnvironment) {
+  console.info("[CLIENT] Realtime upgrade", {
+    apiKeyLoaded: Boolean(env.DASHSCOPE_API_KEY),
+    workspaceLoaded: Boolean(env.DASHSCOPE_WORKSPACE_ID),
+  });
   if (!request.headers.get("cookie")?.includes("lecture_session=")) return new Response("Authentication required", { status: 401 });
   if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") return new Response("Expected a WebSocket upgrade", { status: 426 });
 
@@ -45,6 +49,7 @@ export async function handleRealtimeUpgrade(request: Request, env: RealtimeEnvir
   const client = pair[0];
   const server = pair[1];
   server.accept?.();
+  console.info("[CLIENT] Browser connected");
 
   const source = new URL(request.url).searchParams.get("source") || "en";
   const target = new URL(request.url).searchParams.get("target") || "zh";
@@ -91,8 +96,10 @@ export async function handleRealtimeUpgrade(request: Request, env: RealtimeEnvir
       return;
     }
     jsonMessage(client, { type: "state", state: "CONNECTING", provider: "qwen" });
+    console.info("[QWEN] Connecting", { region: env.QWEN_REALTIME_REGION || "beijing" });
     const response = await fetch(endpoint(env), { headers: { Authorization: `Bearer ${env.DASHSCOPE_API_KEY}`, Upgrade: "websocket" } });
     const socket = (response as Response & { webSocket?: RealtimeSocket }).webSocket;
+    console.info("[QWEN] Upgrade response", { status: response.status, hasSocket: Boolean(socket) });
     if (response.status !== 101 || !socket) throw new Error(`Qwen WebSocket handshake failed (${response.status}).`);
     upstream = socket;
     socket.accept?.();
@@ -102,6 +109,7 @@ export async function handleRealtimeUpgrade(request: Request, env: RealtimeEnvir
       let payload: Record<string, unknown>;
       try { payload = JSON.parse(raw) as Record<string, unknown>; } catch { return; }
       const type = typeof payload.type === "string" ? payload.type : "unknown";
+      if (type === "session.created" || type === "session.updated" || type === "error") console.info("[QWEN EVENT]", type);
       if (type === "session.updated") {
         upstreamReady = true;
         flush();
@@ -151,9 +159,14 @@ export async function handleRealtimeUpgrade(request: Request, env: RealtimeEnvir
     let control: { type?: unknown; vad?: unknown; terminology?: unknown };
     try { control = JSON.parse(event.data) as { type?: unknown; vad?: unknown; terminology?: unknown }; } catch { return; }
     if (control.type === "session.start") {
+      console.info("[CLIENT] Session start");
       vad = control.vad !== false;
       if (control.terminology && typeof control.terminology === "object" && !Array.isArray(control.terminology)) terminology = control.terminology as Record<string, string>;
-      try { await connect(); } catch (error) { fail(errorText(error, "Unable to connect to Qwen realtime.")); }
+      try { await connect(); } catch (error) {
+        const message = errorText(error, "Unable to connect to Qwen realtime.");
+        console.error("[QWEN] Connection failed", message);
+        fail(message);
+      }
     } else if (control.type === "session.pause") jsonMessage(client, { type: "state", state: "PAUSED", provider: "qwen" });
     else if (control.type === "session.resume") jsonMessage(client, { type: "state", state: upstreamReady ? "LISTENING" : "CONNECTING", provider: "qwen" });
     else if (control.type === "session.end") {
