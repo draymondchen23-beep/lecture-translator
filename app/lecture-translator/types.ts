@@ -99,7 +99,7 @@ export type RealtimeServerEvent =
   | { type: "state"; state: LectureState; provider?: ActiveProvider; message?: string }
   | { type: "source.partial"; text: string; sequence: number; startedAt: number }
   | { type: "translation.partial"; text: string; sequence: number; startedAt: number }
-  | { type: "segment.final"; sequence: number; sourceText: string; translatedText: string; startedAt: number; endedAt: number; provider: ActiveProvider; confidence?: number }
+  | { type: "segment.final"; sequence: number; sourceText: string; translatedText: string; startedAt: number; endedAt: number; provider: ActiveProvider; confidence?: number; refined?: boolean }
   | { type: "provider.switched"; from: ActiveProvider; to: ActiveProvider; reason: string }
   | { type: "metrics"; audioChunks: number; audioSent: number; audioQueued: number; partialEvents: number; finalEvents: number; latency: number }
   | { type: "error"; message: string; recoverable: boolean };

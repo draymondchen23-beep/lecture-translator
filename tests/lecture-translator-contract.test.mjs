@@ -21,6 +21,10 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(hook, /AudioWorkletNode/);
   assert.match(hook, /CHUNK_SAMPLES = 1_600/);
   assert.match(hook, /MAX_QUEUED_CHUNKS = 300/);
+  assert.match(hook, /webkitSpeechRecognition/);
+  assert.match(hook, /Realtime connection closed before opening/);
+  assert.match(hook, /recognition\.interimResults = true/);
+  assert.match(hook, /fetch\("\/api\/translate"/);
   assert.match(hook, /url\.searchParams\.set\("provider", "qwen"\)/);
   assert.match(hook, /hostname}:3002/);
   assert.match(hook, /processorOptions: \{ targetSampleRate: SAMPLE_RATE, chunkSamples: CHUNK_SAMPLES \}/);
@@ -47,7 +51,7 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(page, /Jump to live/);
   assert.match(page, /loadWorkspace/);
   assert.match(page, /\/api\/summarize/);
-  assert.match(route, /qwen-mt-plus/);
+  assert.match(route, /qwen-mt-flash/);
 
   // Configuration names may be shown as setup guidance, but credentials must
   // remain server-side and never be embedded as client-side string literals.

@@ -16,6 +16,21 @@ type Options = {
 
 type Metrics = { audioChunks: number; audioSent: number; audioQueued: number; partialEvents: number; finalEvents: number; latency: number };
 type DebugState = { micActive: boolean; rms: number; webSocketState: string; lastServerEvent: string; lastError: string };
+type BrowserSpeechResult = { isFinal: boolean; 0?: { transcript?: string } };
+type BrowserSpeechEvent = { resultIndex: number; results: { length: number; [index: number]: BrowserSpeechResult } };
+type BrowserSpeechError = { error?: string };
+type BrowserSpeechRecognition = {
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: BrowserSpeechEvent) => void) | null;
+  onerror: ((event: BrowserSpeechError) => void) | null;
+  onend: (() => void) | null;
+  start(): void;
+  stop(): void;
+  abort(): void;
+};
+type BrowserSpeechConstructor = new () => BrowserSpeechRecognition;
 
 const SAMPLE_RATE = 16_000;
 const CHUNK_SAMPLES = 1_600;
@@ -46,6 +61,14 @@ export function useRealtimeLecture(options: Options) {
   const reconnectAttemptRef = useRef(0);
   const flushPcmRef = useRef<(() => Promise<void>) | null>(null);
   const connectRef = useRef<() => Promise<void>>(async () => undefined);
+  const speechRef = useRef<BrowserSpeechRecognition | null>(null);
+  const fallbackActiveRef = useRef(false);
+  const fallbackSequenceRef = useRef(0);
+  const fallbackStartedAtRef = useRef(0);
+  const fallbackSessionRef = useRef("");
+  const fallbackFinalIndexesRef = useRef(new Set<number>());
+  const fallbackQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const fallbackRestartRef = useRef<number | null>(null);
 
   useEffect(() => {
     optionsRef.current = options;
@@ -89,6 +112,7 @@ export function useRealtimeLecture(options: Options) {
 
     await new Promise<void>((resolve, reject) => {
       const socket = new WebSocket(url);
+      let opened = false;
       socket.binaryType = "arraybuffer";
       socketRef.current = socket;
       const timeout = window.setTimeout(() => {
@@ -97,6 +121,7 @@ export function useRealtimeLecture(options: Options) {
       }, 12_000);
 
       socket.onopen = () => {
+        opened = true;
         window.clearTimeout(timeout);
         reconnectAttemptRef.current = 0;
         trace("socket.open");
@@ -131,7 +156,11 @@ export function useRealtimeLecture(options: Options) {
         window.clearTimeout(timeout);
         trace("socket.close", { intentional: intentionalCloseRef.current });
         if (DEBUG) setDebug((current) => ({ ...current, webSocketState: "CLOSED" }));
-        if (intentionalCloseRef.current || !streamRef.current) return;
+        if (!opened) {
+          reject(new Error("Realtime connection closed before opening"));
+          return;
+        }
+        if (intentionalCloseRef.current || fallbackActiveRef.current || !streamRef.current) return;
         setState("RECONNECTING");
         setMessage("Connection lost. Audio is being preserved locally.");
         const attempt = Math.min(reconnectAttemptRef.current + 1, 8);
@@ -145,7 +174,7 @@ export function useRealtimeLecture(options: Options) {
   useEffect(() => { connectRef.current = connect; }, [connect]);
 
   const sendChunk = useCallback((chunk: ArrayBuffer) => {
-    if (pausedRef.current) return;
+    if (pausedRef.current || fallbackActiveRef.current) return;
     const socket = socketRef.current;
     if (socket?.readyState === WebSocket.OPEN) socket.send(chunk);
     else {
@@ -155,6 +184,121 @@ export function useRealtimeLecture(options: Options) {
     setMetrics((current) => ({ ...current, audioChunks: current.audioChunks + 1 }));
     if (DEBUG && queuedRef.current.length) trace("audio.queued", { bytes: chunk.byteLength, queued: queuedRef.current.length });
   }, []);
+
+  const queueFallbackTranslation = useCallback((sourceText: string, sequence: number, startedAt: number) => {
+    const sessionId = fallbackSessionRef.current;
+    const task = fallbackQueueRef.current.then(async () => {
+      setState("PROCESSING");
+      const response = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          lectureId: sessionId,
+          sessionId,
+          segmentId: `${sessionId}:${sequence}`,
+          text: sourceText,
+          terminology: optionsRef.current.terminology,
+        }),
+      });
+      const result = await response.json().catch(() => ({})) as { translation?: unknown; error?: unknown };
+      if (!response.ok || typeof result.translation !== "string" || !result.translation.trim()) {
+        throw new Error(typeof result.error === "string" ? result.error : "Translation failed.");
+      }
+      const translatedText = result.translation.trim();
+      emit({ type: "translation.partial", text: translatedText, sequence, startedAt });
+      emit({
+        type: "segment.final",
+        sequence,
+        sourceText,
+        translatedText,
+        startedAt,
+        endedAt: Date.now(),
+        provider: "qwen",
+        refined: true,
+      });
+      if (fallbackActiveRef.current && !pausedRef.current) setState("LISTENING");
+    }).catch((error) => {
+      emit({
+        type: "error",
+        message: error instanceof Error ? error.message : "Translation failed.",
+        recoverable: true,
+      });
+      emit({
+        type: "segment.final",
+        sequence,
+        sourceText,
+        translatedText: "",
+        startedAt,
+        endedAt: Date.now(),
+        provider: "qwen",
+        refined: true,
+      });
+      if (fallbackActiveRef.current && !pausedRef.current) setState("LISTENING");
+    });
+    fallbackQueueRef.current = task;
+  }, [emit]);
+
+  const startBrowserFallback = useCallback(() => {
+    const speechWindow = window as unknown as {
+      SpeechRecognition?: BrowserSpeechConstructor;
+      webkitSpeechRecognition?: BrowserSpeechConstructor;
+    };
+    const SpeechRecognition = speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition;
+    if (!SpeechRecognition) return false;
+
+    fallbackActiveRef.current = true;
+    cleanupSocket();
+    queuedRef.current = [];
+    fallbackSequenceRef.current = 0;
+    fallbackStartedAtRef.current = Date.now();
+    fallbackSessionRef.current = crypto.randomUUID();
+    fallbackFinalIndexesRef.current = new Set();
+    fallbackQueueRef.current = Promise.resolve();
+
+    const recognition = new SpeechRecognition();
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.lang = "en-GB";
+    recognition.onresult = (event) => {
+      let interim = "";
+      for (let index = event.resultIndex; index < event.results.length; index += 1) {
+        const result = event.results[index];
+        const text = result?.[0]?.transcript?.trim() || "";
+        if (!text) continue;
+        if (result.isFinal) {
+          if (fallbackFinalIndexesRef.current.has(index)) continue;
+          fallbackFinalIndexesRef.current.add(index);
+          const sequence = fallbackSequenceRef.current++;
+          const startedAt = fallbackStartedAtRef.current || Date.now();
+          emit({ type: "source.partial", text, sequence, startedAt });
+          queueFallbackTranslation(text, sequence, startedAt);
+          fallbackStartedAtRef.current = Date.now();
+        } else {
+          interim = `${interim} ${text}`.trim();
+        }
+      }
+      if (interim) {
+        if (!fallbackStartedAtRef.current) fallbackStartedAtRef.current = Date.now();
+        emit({ type: "source.partial", text: interim, sequence: fallbackSequenceRef.current, startedAt: fallbackStartedAtRef.current });
+        setState("SPEAKING");
+      }
+    };
+    recognition.onerror = (event) => {
+      if (event.error === "aborted" || event.error === "no-speech") return;
+      emit({ type: "error", message: `Browser transcription failed${event.error ? `: ${event.error}` : "."}`, recoverable: true });
+    };
+    recognition.onend = () => {
+      if (!fallbackActiveRef.current || pausedRef.current || intentionalCloseRef.current) return;
+      fallbackFinalIndexesRef.current = new Set();
+      fallbackRestartRef.current = window.setTimeout(() => {
+        try { recognition.start(); } catch { /* already restarting */ }
+      }, 250);
+    };
+    speechRef.current = recognition;
+    recognition.start();
+    emit({ type: "state", state: "LISTENING", provider: "qwen", message: "Browser transcription compatibility mode" });
+    return true;
+  }, [cleanupSocket, emit, queueFallbackTranslation]);
 
   const startMicrophone = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser cannot access a microphone.");
@@ -218,7 +362,11 @@ export function useRealtimeLecture(options: Options) {
     setState("CONNECTING");
     try {
       await startMicrophone();
-      await connect();
+      try {
+        await connect();
+      } catch (error) {
+        if (!startBrowserFallback()) throw error;
+      }
     } catch (error) {
       const currentStream = streamRef.current as MediaStream | null;
       currentStream?.getTracks().forEach((track: MediaStreamTrack) => track.stop());
@@ -235,11 +383,12 @@ export function useRealtimeLecture(options: Options) {
       emit({ type: "error", message: errorMessage, recoverable: false });
       throw error;
     }
-  }, [connect, emit, startMicrophone]);
+  }, [connect, emit, startBrowserFallback, startMicrophone]);
 
   const pause = useCallback(() => {
     pausedRef.current = true;
     contextRef.current?.suspend().catch(() => undefined);
+    if (fallbackActiveRef.current) speechRef.current?.stop();
     socketRef.current?.send(JSON.stringify({ type: "session.pause" }));
     setLevel(0);
     setState("PAUSED");
@@ -248,6 +397,10 @@ export function useRealtimeLecture(options: Options) {
   const resume = useCallback(() => {
     pausedRef.current = false;
     contextRef.current?.resume().catch(() => undefined);
+    if (fallbackActiveRef.current) {
+      fallbackFinalIndexesRef.current = new Set();
+      try { speechRef.current?.start(); } catch { /* already active */ }
+    }
     socketRef.current?.send(JSON.stringify({ type: "session.resume" }));
     setState("LISTENING");
   }, []);
@@ -263,6 +416,12 @@ export function useRealtimeLecture(options: Options) {
     await flushPcmRef.current?.();
     pausedRef.current = true;
     await contextRef.current?.suspend().catch(() => undefined);
+    fallbackActiveRef.current = false;
+    if (fallbackRestartRef.current !== null) window.clearTimeout(fallbackRestartRef.current);
+    fallbackRestartRef.current = null;
+    speechRef.current?.stop();
+    speechRef.current = null;
+    await Promise.race([fallbackQueueRef.current, new Promise<void>((resolve) => window.setTimeout(resolve, 20_000))]);
     if (socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: "session.end" }));
       await new Promise<void>((resolve) => {
@@ -298,6 +457,9 @@ export function useRealtimeLecture(options: Options) {
 
   useEffect(() => () => {
     intentionalCloseRef.current = true;
+    fallbackActiveRef.current = false;
+    if (fallbackRestartRef.current !== null) window.clearTimeout(fallbackRestartRef.current);
+    speechRef.current?.abort();
     cleanupSocket();
     if (recorderRef.current?.state !== "inactive") recorderRef.current?.stop();
     streamRef.current?.getTracks().forEach((track) => track.stop());

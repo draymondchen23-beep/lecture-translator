@@ -32,6 +32,7 @@ test("interim events and rerenders do not claim a refinement", () => {
   assert.equal(gate.claim("lecture-1", "unexpected"), true);
   assert.equal(shouldRefineFinal({ type: "segment.final", sourceText: "   " }), false);
   assert.equal(shouldRefineFinal({ type: "segment.final", sourceText: "final text" }), true);
+  assert.equal(shouldRefineFinal({ type: "segment.final", sourceText: "final text", refined: true }), false);
 });
 
 test("duplicate segment uses memory cache and never repeats external refinement", async () => {

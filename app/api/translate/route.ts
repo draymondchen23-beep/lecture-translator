@@ -68,7 +68,7 @@ export async function POST(request: Request) {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({
-          model: env.QWEN_MT_MODEL?.trim() || "qwen-mt-plus",
+          model: env.QWEN_MT_MODEL?.trim() || "qwen-mt-flash",
           messages: [{ role: "user", content: `${value.text}${terminologyPrompt(body.terminology)}` }],
           translation_options: { source_lang: "English", target_lang: "Chinese", domains: "University lecture, academic English. Preserve formulas, numbers, units, names and established English abbreviations. On first use, format uncertain academic terms as 中文（English Term）." },
         }),

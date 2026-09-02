@@ -12,5 +12,5 @@ export function createFinalSegmentGate() {
 }
 
 export function shouldRefineFinal(event) {
-  return Boolean(event && typeof event === "object" && event.type === "segment.final" && typeof event.sourceText === "string" && event.sourceText.trim());
+  return Boolean(event && typeof event === "object" && event.type === "segment.final" && !event.refined && typeof event.sourceText === "string" && event.sourceText.trim());
 }

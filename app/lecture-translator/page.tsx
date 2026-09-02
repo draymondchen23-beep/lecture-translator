@@ -306,7 +306,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
         startTime: Math.max(0, (event.startedAt - sessionStart) / 1_000), endTime: Math.max(0, (event.endedAt - sessionStart) / 1_000),
         sourceText: event.sourceText, translatedText: event.translatedText, sourceLanguage: "en", targetLanguage: "zh",
         provider: event.provider, speaker: "Lecturer", confidence: event.confidence ?? null, isFinal: true,
-        createdAt: new Date().toISOString(), bookmarked: false, refinementState: "idle",
+        createdAt: new Date().toISOString(), bookmarked: false, refinementState: event.refined ? "refined" : "idle",
       };
       updateSession(sessionId, (current) => current.segments.some((item) => item.id === segment.id) ? current : { ...current, segments: [...current.segments, segment] });
       setPartial({ source: "", translation: "", sequence: event.sequence + 1 });
