@@ -33,7 +33,8 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(hook, /fallbackCorrectionQueueRef/);
   assert.match(hook, /fallbackFinalCorrectionSegmentId/);
   assert.match(hook, /fallbackFinalCorrectionSegmentId\(sessionId, block\.sequence\), "accurate", block\.context/);
-  assert.match(hook, /fallbackRequestSegmentId\(sessionId, block\.sequence, block\.requestIndex\+\+\), "fast", block\.context/);
+  assert.match(hook, /fallbackRequestSegmentId\(sessionId, block\.sequence, block\.requestIndex\+\+\), "accurate", block\.context/);
+  assert.match(hook, /isReadyStablePhrase\(block\.pendingSource\)/);
   assert.ok((hook.match(/fallbackContextRef\.current = ""/g) || []).length >= 2);
   assert.match(hook, /url\.searchParams\.set\("provider", "qwen"\)/);
   assert.match(hook, /hostname}:3002/);
@@ -62,7 +63,9 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.doesNotMatch(page, /Preview fake stream|runFakeStream/);
   assert.match(page, /Jump to live/);
   assert.match(page, /useProgressiveText/);
-  assert.match(page, /reconcileDisplayedPrefix/);
+  assert.match(page, /enabled: activeSession\.status === "recording"/);
+  assert.match(page, /resetKey: partial\.sequence/);
+  assert.doesNotMatch(page, /finalVisual|animateTranslation|translationDisplay/);
   assert.match(page, /programmaticScrollRef/);
   assert.match(page, /onWheel=/);
   assert.match(page, /requestAnimationFrame/);

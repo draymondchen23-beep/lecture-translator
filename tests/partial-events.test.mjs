@@ -26,12 +26,12 @@ test("rewritten cumulative targets retain their valid displayed prefix", () => {
   assert.equal(reconcileDisplayedPrefix("你好", "你", "再见"), "");
 });
 
-test("final visual continuation starts at the live prefix while persisted text stays complete", () => {
+test("final text remains complete instead of replaying from an old display prefix", () => {
   const liveTarget = "欢迎来到课堂";
   const displayed = "欢迎来到";
   const finalTarget = "欢迎来到课堂。";
   assert.equal(reconcileDisplayedPrefix(liveTarget, displayed, finalTarget), displayed);
-  assert.equal(finalTarget, "欢迎来到课堂。");
+  assert.equal(advanceDisplayedText(finalTarget, finalTarget), finalTarget);
 });
 
 test("center recentering ignores small character-growth drift", () => {

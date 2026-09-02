@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyFinalCorrection, bestTranscript, coalescePendingWords, contextForFastRequest, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, nextFallbackRequestKind, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, stableWords, uncommittedTail } from "../app/lecture-translator/browser-incremental.mjs";
+import { applyFinalCorrection, bestTranscript, coalescePendingWords, contextForFastRequest, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, isReadyStablePhrase, nextFallbackRequestKind, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, stableWords, uncommittedTail } from "../app/lecture-translator/browser-incremental.mjs";
 
 test("stable prefixes yield a new interim chunk without a timer", () => {
   let stable = [];
@@ -23,6 +23,12 @@ test("pending stable words coalesce without repeating already committed words", 
   const first = uncommittedTail(stable.join(" "), committed);
   assert.equal(first, "brown");
   assert.equal(coalescePendingWords(first, uncommittedTail("The quick brown fox", "The quick brown")), "brown fox");
+});
+
+test("stable words wait for a meaningful phrase or punctuation boundary", () => {
+  assert.equal(isReadyStablePhrase("one two three four"), false);
+  assert.equal(isReadyStablePhrase("one two three four five"), true);
+  assert.equal(isReadyStablePhrase("however,"), true);
 });
 
 test("context is limited to the preceding finalized block tail", () => {

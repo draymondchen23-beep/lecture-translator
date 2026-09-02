@@ -23,7 +23,7 @@ import { useRealtimeLecture } from "./use-realtime-lecture";
 import { reducePartialEvent } from "./partial-events.mjs";
 import { createFinalSegmentGate, shouldRefineFinal } from "./incremental-refinement.mjs";
 import { AuthPanel, type SignedInUser } from "./auth-panel";
-import { reconcileDisplayedPrefix, shouldRecenter } from "./live-display.mjs";
+import { shouldRecenter } from "./live-display.mjs";
 import { useProgressiveText } from "./use-progressive-text";
 
 type Tab = "transcript" | "notes" | "terms" | "bookmarks";
@@ -199,21 +199,15 @@ function Icon({ name }: { name: "menu" | "plus" | "search" | "settings" | "copy"
 }
 
 const TranscriptRow = memo(function TranscriptRow({
-  segment, query, editing, translationDisplay, animateTranslation, onTranslationDone, scrollRef, onBookmark, onAsk, onEdit, onSaveEdit,
+  segment, query, editing, scrollRef, onBookmark, onAsk, onEdit, onSaveEdit,
 }: {
   segment: TranscriptSegment; query: string; editing: boolean;
-  translationDisplay?: string; animateTranslation?: boolean; onTranslationDone?(): void;
   scrollRef?: (element: HTMLElement | null) => void;
   onBookmark(id: string): void; onAsk(segment: TranscriptSegment): void; onEdit(id: string): void;
   onSaveEdit(id: string, source: string, translation: string): void;
 }) {
   const [source, setSource] = useState(segment.sourceText);
   const [translation, setTranslation] = useState(segment.translatedText);
-  const progressiveTranslation = useProgressiveText(segment.translatedText, {
-    enabled: animateTranslation,
-    initialText: translationDisplay ?? segment.translatedText,
-    onComplete: onTranslationDone,
-  });
   useEffect(() => { setSource(segment.sourceText); setTranslation(segment.translatedText); }, [segment.sourceText, segment.translatedText]);
   const highlighted = query && `${segment.sourceText} ${segment.translatedText}`.toLowerCase().includes(query.toLowerCase());
   return <article ref={scrollRef} className={`${styles.segment} ${highlighted ? styles.searchMatch : ""}`} id={`segment-${segment.id}`}>
@@ -226,7 +220,7 @@ const TranscriptRow = memo(function TranscriptRow({
       </> : <>
         <div className={styles.bilingualColumns}>
           <div><span className={styles.languageLabel}>English</span><p className={styles.sourceText}>{segment.sourceText}</p></div>
-          <div><span className={styles.languageLabel}>中文</span><p className={styles.translationText}>{progressiveTranslation.displayed || <span className={styles.muted}>Translation pending…</span>}</p></div>
+          <div><span className={styles.languageLabel}>中文</span><p className={styles.translationText}>{segment.translatedText || <span className={styles.muted}>Translation pending…</span>}</p></div>
         </div>
       </>}
       <span className={styles.providerTag}>{segment.provider === "qwen" ? "Qwen" : "Tencent"}{segment.refinementState === "refined" ? " · MT refined" : ""}</span>
@@ -245,7 +239,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
   const [hydrated, setHydrated] = useState(false);
   const [tab, setTab] = useState<Tab>("transcript");
   const [partial, setPartial] = useState({ source: "", translation: "", sequence: 0 });
-  const [finalVisual, setFinalVisual] = useState<{ segmentId: string; initialTranslation: string } | null>(null);
+  const [latestAnchorId, setLatestAnchorId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -267,8 +261,6 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
   const workspaceRef = useRef(workspace);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const liveRef = useRef<HTMLElement | null>(null);
-  const partialRef = useRef(partial);
-  const displayedTranslationRef = useRef("");
   const programmaticScrollRef = useRef<number | null>(null);
   const manualScrollRef = useRef(false);
   const userScrollLockRef = useRef(false);
@@ -279,10 +271,10 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
   const activeSession = workspace.sessions.find((session) => session.id === workspace.activeSessionId) || workspace.sessions[0];
   activeIdRef.current = activeSession.id;
   workspaceRef.current = workspace;
-  partialRef.current = partial;
-
-  const liveTranslation = useProgressiveText(partial.translation);
-  displayedTranslationRef.current = liveTranslation.displayed;
+  const liveTranslation = useProgressiveText(partial.translation, {
+    enabled: activeSession.status === "recording",
+    resetKey: partial.sequence,
+  });
 
   const updateSession = useCallback((sessionId: string, updater: (session: LectureSession) => LectureSession) => {
     setWorkspace((current) => ({ ...current, sessions: current.sessions.map((session) => session.id === sessionId ? updater(session) : session) }));
@@ -329,9 +321,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
         provider: event.provider, speaker: "Lecturer", confidence: event.confidence ?? null, isFinal: true,
         createdAt: new Date().toISOString(), bookmarked: false, refinementState: event.refined ? "refined" : "idle",
       };
-      const previousPartial = partialRef.current;
-      const continuation = reconcileDisplayedPrefix(previousPartial.translation, displayedTranslationRef.current, event.translatedText);
-      setFinalVisual({ segmentId: segment.id, initialTranslation: continuation });
+      setLatestAnchorId(segment.id);
       updateSession(sessionId, (current) => current.segments.some((item) => item.id === segment.id) ? current : { ...current, segments: [...current.segments, segment] });
       setPartial((current) => reducePartialEvent(current, event));
       if (shouldRefineFinal(event) && finalSegmentGateRef.current.claim(sessionId, segment.id)) void refineSegment(sessionId, segment);
@@ -468,14 +458,14 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
   useEffect(() => {
     if (!workspace.settings.autoScroll || !autoFollowing || tab !== "transcript") return;
     scheduleLiveScroll("smooth");
-  }, [activeSession.segments.length, autoFollowing, partial.source, partial.translation, tab, workspace.settings.autoScroll, finalVisual, scheduleLiveScroll]);
+  }, [activeSession.segments.length, autoFollowing, partial.source, partial.translation, tab, workspace.settings.autoScroll, latestAnchorId, scheduleLiveScroll]);
 
   useEffect(() => {
     if (!workspace.settings.autoScroll || !autoFollowing || tab !== "transcript" || !liveRef.current || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => scheduleLiveScroll("auto"));
     observer.observe(liveRef.current);
     return () => observer.disconnect();
-  }, [autoFollowing, finalVisual, partial.source, partial.translation, scheduleLiveScroll, tab, workspace.settings.autoScroll]);
+  }, [autoFollowing, latestAnchorId, partial.source, partial.translation, scheduleLiveScroll, tab, workspace.settings.autoScroll]);
 
   useEffect(() => {
     if (!notice) return;
@@ -544,7 +534,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
     const session = newSession();
     setWorkspace((current) => ({ ...current, sessions: [session, ...current.sessions], activeSessionId: session.id }));
     setPartial({ source: "", translation: "", sequence: 0 });
-    setFinalVisual(null);
+    setLatestAnchorId(null);
     setTab("transcript");
     setSidebarOpen(false);
   };
@@ -552,7 +542,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
   const chooseSession = (sessionId: string) => {
     if (isRecording && sessionId !== activeSession.id) { setNotice("End the current lecture before opening another one."); return; }
     setWorkspace((current) => ({ ...current, activeSessionId: sessionId }));
-    setFinalVisual(null);
+    setLatestAnchorId(null);
     setTab("transcript");
     setSidebarOpen(false);
   };
@@ -587,7 +577,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
     void deleteLectureData(sessionId).catch(() => undefined);
     setDeleteTarget(null);
     setPartial({ source: "", translation: "", sequence: 0 });
-    setFinalVisual(null);
+    setLatestAnchorId(null);
     setTab("transcript");
   };
 
@@ -647,9 +637,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
     return `${segment.sourceText} ${segment.translatedText}`.toLowerCase().includes(query.toLowerCase());
   }), [activeSession.segments, query, tab]);
   const visibleSegments = showOlder || filteredSegments.length <= 500 ? filteredSegments : filteredSegments.slice(-500);
-  const finishFinalVisual = useCallback((segmentId: string) => {
-    setFinalVisual((current) => current?.segmentId === segmentId ? null : current);
-  }, []);
+  const hasLiveContent = Boolean(partial.source || partial.translation);
 
   return <div className={`${styles.app} ${sidebarCollapsed ? styles.appSidebarCollapsed : ""}`}>
     <iframe className={styles.brandOrbsBackground} src="/backgrounds/brand-orbs-codex.html" title="" aria-hidden="true" tabIndex={-1} />
@@ -732,10 +720,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
                 segment={segment}
                 query={query}
                 editing={editingId === segment.id}
-                translationDisplay={finalVisual?.segmentId === segment.id ? finalVisual.initialTranslation : undefined}
-                animateTranslation={finalVisual?.segmentId === segment.id}
-                onTranslationDone={finalVisual?.segmentId === segment.id ? () => finishFinalVisual(segment.id) : undefined}
-                scrollRef={finalVisual?.segmentId === segment.id ? (element) => { liveRef.current = element; } : undefined}
+                scrollRef={latestAnchorId === segment.id && !hasLiveContent ? (element) => { liveRef.current = element; } : undefined}
                 onBookmark={bookmark}
                 onAsk={askAI}
                 onEdit={setEditingId}

@@ -16,6 +16,10 @@ export function coalescePendingWords(pending, next) {
   return `${pending} ${next}`.trim();
 }
 
+export function isReadyStablePhrase(text, minimumWords = 5) {
+  return splitWords(text).length >= minimumWords || /[.!?,;:]$/.test(text.trim());
+}
+
 export function contextTail(source, maxChars = 400) {
   const text = source.trim();
   if (text.length <= maxChars) return text;

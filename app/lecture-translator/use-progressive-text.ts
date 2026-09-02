@@ -6,6 +6,7 @@ import { advanceDisplayedText, codePointLength, progressiveDelay, reconcileDispl
 type Options = {
   enabled?: boolean;
   initialText?: string;
+  resetKey?: string | number;
   onComplete?: () => void;
 };
 
@@ -19,6 +20,7 @@ export function useProgressiveText(target: string, options: Options = {}) {
   const [displayed, setDisplayed] = useState(options.initialText || "");
   const displayedRef = useRef(displayed);
   const previousTargetRef = useRef(options.initialText || target);
+  const previousResetKeyRef = useRef(options.resetKey);
   const onCompleteRef = useRef(options.onComplete);
 
   useEffect(() => {
@@ -39,6 +41,12 @@ export function useProgressiveText(target: string, options: Options = {}) {
 
   useEffect(() => {
     let timer: number | undefined;
+    const reset = previousResetKeyRef.current !== options.resetKey;
+    if (reset) {
+      previousResetKeyRef.current = options.resetKey;
+      previousTargetRef.current = "";
+      displayedRef.current = "";
+    }
     const previousTarget = previousTargetRef.current;
     const start = enabled && !reducedMotion
       ? reconcileDisplayedPrefix(previousTarget, displayedRef.current, target)
@@ -66,7 +74,7 @@ export function useProgressiveText(target: string, options: Options = {}) {
     };
     timer = window.setTimeout(tick, progressiveDelay(codePointLength(target) - codePointLength(start)));
     return () => { if (timer !== undefined) window.clearTimeout(timer); };
-  }, [target, enabled, reducedMotion]);
+  }, [target, enabled, reducedMotion, options.resetKey]);
 
   return { displayed: enabled && !reducedMotion ? displayed : target, isAnimating: enabled && !reducedMotion && displayed !== target };
 }

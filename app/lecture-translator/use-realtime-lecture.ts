@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { applyFinalCorrection, bestTranscript, coalescePendingWords, contextForFastRequest, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, nextFallbackRequestKind, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, splitWords, stableWords } from "./browser-incremental.mjs";
+import { applyFinalCorrection, bestTranscript, coalescePendingWords, contextForFastRequest, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, isReadyStablePhrase, nextFallbackRequestKind, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, splitWords, stableWords } from "./browser-incremental.mjs";
 import type { LectureState, ProviderPreference, RealtimeServerEvent } from "./types";
 
 type Options = {
@@ -278,13 +278,13 @@ export function useRealtimeLecture(options: Options) {
           queueFallbackFinalCorrection(block, sessionId, epoch);
           return;
         }
-        if (!kind) return;
+        if (!kind || !isReadyStablePhrase(block.pendingSource)) return;
         const sourceText = block.pendingSource;
         block.pendingSource = "";
         try {
           setState("PROCESSING");
           if (!contextForFastRequest(block.context, block.requestIndex)) block.context = "";
-          const translated = await translateFallback(sessionId, sourceText, fallbackRequestSegmentId(sessionId, block.sequence, block.requestIndex++), "fast", block.context);
+          const translated = await translateFallback(sessionId, sourceText, fallbackRequestSegmentId(sessionId, block.sequence, block.requestIndex++), "accurate", block.context);
           if (epoch !== fallbackEpochRef.current) return;
           block.translatedText = appendTranslation(block.translatedText, translated);
           emit({ type: "translation.partial", text: block.translatedText, sequence: block.sequence, startedAt: block.startedAt });
@@ -396,7 +396,7 @@ export function useRealtimeLecture(options: Options) {
         if (chunk) {
           block.committedSource = `${block.committedSource} ${chunk}`.trim();
           block.pendingSource = coalescePendingWords(block.pendingSource, chunk);
-          queueFallbackTranslation(block);
+          if (isReadyStablePhrase(block.pendingSource)) queueFallbackTranslation(block);
         }
         setState("SPEAKING");
       }
