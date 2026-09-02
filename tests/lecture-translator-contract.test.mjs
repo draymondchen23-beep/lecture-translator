@@ -54,6 +54,10 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(route, /qwen-mt-flash/);
   assert.match(route, /QWEN_API_URL\?\.trim\(\)/);
   assert.match(route, /cn-beijing\.maas\.aliyuncs\.com\/compatible-mode\/v1\/chat\/completions/);
+  assert.match(route, /workspace && \(!override \|\| isGenericDashScopeUrl\(override\)\)/);
+  assert.match(route, /\[400, 404, 422\]\.includes\(response\.status\)/);
+  assert.match(route, /model = "qwen-mt-plus"/);
+  assert.match(route, /!explicitModel/);
   assert.match(route, /Qwen-MT upstream request failed/);
   assert.doesNotMatch(route, /response\.text\(/);
 

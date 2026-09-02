@@ -18,13 +18,17 @@ type TranslateRequest = { text?: unknown; terminology?: unknown; lectureId?: unk
 const DEFAULT_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions";
 const refiner = createIncrementalRefiner();
 
+function isGenericDashScopeUrl(value: string) {
+  try { return new URL(value).hostname === "dashscope.aliyuncs.com"; } catch { return false; }
+}
+
 function qwenUrl(env: Environment) {
   const override = env.QWEN_API_URL?.trim();
-  if (override) return override;
   const workspace = env.DASHSCOPE_WORKSPACE_ID?.trim();
-  return workspace
-    ? `https://${workspace}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions`
-    : DEFAULT_URL;
+  if (workspace && (!override || isGenericDashScopeUrl(override))) {
+    return `https://${workspace}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/chat/completions`;
+  }
+  return override || DEFAULT_URL;
 }
 
 function json(body: object, status = 200) {
@@ -73,18 +77,26 @@ export async function POST(request: Request) {
 
   try {
     const refined = await refiner.run(value, async () => {
-      const response = await fetch(qwenUrl(env), {
+      const explicitModel = env.QWEN_MT_MODEL?.trim();
+      const requestModel = (model: string) => fetch(qwenUrl(env), {
         method: "POST",
         headers: { Authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({
-          model: env.QWEN_MT_MODEL?.trim() || "qwen-mt-flash",
+          model,
           messages: [{ role: "user", content: `${value.text}${terminologyPrompt(body.terminology)}` }],
           translation_options: { source_lang: "English", target_lang: "Chinese", domains: "University lecture, academic English. Preserve formulas, numbers, units, names and established English abbreviations. On first use, format uncertain academic terms as 中文（English Term）." },
         }),
         signal: AbortSignal.timeout(20_000),
       });
+      let model = explicitModel || "qwen-mt-flash";
+      let response = await requestModel(model);
+      if (!explicitModel && [400, 404, 422].includes(response.status)) {
+        console.warn("[translate] Qwen-MT upstream request retrying", { status: response.status, model });
+        model = "qwen-mt-plus";
+        response = await requestModel(model);
+      }
       if (!response.ok) {
-        console.warn("[translate] Qwen-MT upstream request failed", { status: response.status });
+        console.warn("[translate] Qwen-MT upstream request failed", { status: response.status, model });
         throw new Error(response.status === 429 ? "Qwen-MT is busy or its quota is exhausted." : "Qwen-MT did not accept the refinement request.");
       }
       const result = await response.json().catch(() => ({})) as QwenResponse;
