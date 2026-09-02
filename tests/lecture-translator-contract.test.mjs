@@ -35,7 +35,7 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(hook, /fallbackRequestSegmentId\(sessionId, block\.sequence, block\.requestIndex\+\+\), "accurate", block\.context/);
   assert.match(hook, /planInterimTranslation\(\{ sourceText: block\.sourceText, stableText/);
   assert.match(hook, /block\.interimQuality === "accurate" && block\.interimSource === sourceText/);
-  assert.match(hook, /if \(block\.finalRequested\) return;\s*block\.translatedText = translated/);
+  assert.match(hook, /const action = previewResultAction\(block\);\s*if \(action === "discard"\) return;\s*if \(action === "drain"\) continue;\s*block\.translatedText = translated/);
   assert.match(hook, /block\.translatedText = translated/);
   assert.ok((hook.match(/fallbackContextRef\.current = ""/g) || []).length >= 2);
   assert.match(hook, /url\.searchParams\.set\("provider", "qwen"\)/);
@@ -84,7 +84,7 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(page, /dockRef/);
   assert.match(page, /visibleContentRect/);
   assert.match(page, /container\.scrollTo/);
-  assert.doesNotMatch(page, /partial\.translation, liveTranslation\.displayed/);
+  assert.match(page, /partial\.translation, liveTranslation\.displayed/);
   assert.doesNotMatch(page, /setPartial\(\(current\) => \(\{ \.\.\.current, translation: liveTranslation\.displayed/);
   assert.match(page, /loadWorkspace/);
   assert.match(page, /\/api\/summarize/);

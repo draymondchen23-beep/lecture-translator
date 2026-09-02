@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyFinalCorrection, bestTranscript, coalescePendingWords, contextForFastRequest, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, hasSemanticBoundary, isReadyStablePhrase, nextFallbackRequestKind, planInterimTranslation, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, stableWords, uncommittedTail } from "../app/lecture-translator/browser-incremental.mjs";
+import { applyFinalCorrection, bestTranscript, coalescePendingWords, contextForFastRequest, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, hasSemanticBoundary, isReadyStablePhrase, nextFallbackRequestKind, planInterimTranslation, previewResultAction, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, stableWords, uncommittedTail } from "../app/lecture-translator/browser-incremental.mjs";
 
 test("stable prefixes yield a new interim chunk without a timer", () => {
   let stable = [];
@@ -31,11 +31,22 @@ test("only a semantic boundary opens the legacy stable phrase gate", () => {
   assert.equal(hasSemanticBoundary("A complete sentence."), true);
 });
 
-test("interim planning replaces only a complete short unit and limits requests", () => {
-  assert.equal(planInterimTranslation({ sourceText: "a longer unbounded sentence continues with several more words here", stableText: "a longer unbounded sentence continues with several more words here", stableObservations: 2 }), null);
-  assert.deepEqual(planInterimTranslation({ sourceText: "This short statement", stableText: "This short statement", stableObservations: 2 }), { text: "This short statement", mode: "replace" });
-  assert.equal(planInterimTranslation({ sourceText: "A long sentence,", stableText: "A long sentence,", stableObservations: 1 }), null);
-  assert.equal(planInterimTranslation({ sourceText: "This short statement", stableText: "This short statement", stableObservations: 2, interimCount: 1 }), null);
+test("rolling previews send whole stable prefixes at bounded intervals", () => {
+  const short = "This is stable";
+  assert.deepEqual(planInterimTranslation({ sourceText: short, stableText: short }), { text: short, mode: "replace" });
+  assert.equal(planInterimTranslation({ sourceText: "This is stable but unfinished", stableText: short }), null);
+  const firstLong = "one two three four five six seven eight nine ten";
+  assert.deepEqual(planInterimTranslation({ sourceText: `${firstLong} eleven`, stableText: firstLong, lastPreviewText: short, interimCount: 1 }), { text: firstLong, mode: "replace" });
+  assert.equal(planInterimTranslation({ sourceText: "one two three four five six seven eight nine ten eleven twelve thirteen", stableText: "one two three four five six seven eight nine ten eleven twelve", lastPreviewText: firstLong, interimCount: 2 }), null);
+  const third = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen";
+  assert.deepEqual(planInterimTranslation({ sourceText: `${third} eighteen`, stableText: third, lastPreviewText: firstLong, interimCount: 2 }), { text: third, mode: "replace" });
+  assert.equal(planInterimTranslation({ sourceText: `${third} eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four`, stableText: `${third} eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four`, lastPreviewText: third, interimCount: 3 }), null);
+});
+
+test("preview results publish, drain, or discard according to the current block", () => {
+  assert.equal(previewResultAction({ finalRequested: false, pendingPreviewText: "" }), "publish");
+  assert.equal(previewResultAction({ finalRequested: false, pendingPreviewText: "newer prefix" }), "drain");
+  assert.equal(previewResultAction({ finalRequested: true, pendingPreviewText: "newer prefix" }), "discard");
 });
 
 test("context is limited to the preceding finalized block tail", () => {

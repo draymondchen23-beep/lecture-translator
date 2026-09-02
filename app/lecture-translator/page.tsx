@@ -214,7 +214,6 @@ const TranscriptRow = memo(function TranscriptRow({
   const text = side === "source" ? segment.sourceText : segment.translatedText;
   const sentences = splitSentences(text, side === "source" ? "en" : "zh");
   return <article ref={scrollRef} className={`${styles.segment} ${styles.columnSegment} ${highlighted ? styles.searchMatch : ""}`} id={side === "source" ? `segment-${segment.id}` : undefined}>
-    {side === "source" ? <button className={styles.timestamp} onClick={() => navigator.clipboard.writeText(formatTime(segment.startTime))}>{formatTime(segment.startTime)}</button> : null}
     <div className={styles.segmentBody}>
       {side === "source" && editing ? <>
         <textarea aria-label="English transcript" value={source} onChange={(event) => setSource(event.target.value)} />
@@ -275,6 +274,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
   const scrollFrameRef = useRef<number | null>(null);
   const pendingScrollBehaviorRef = useRef<ScrollBehavior>("auto");
   const columnScrollFramesRef = useRef<{ source: number | null; translation: number | null }>({ source: null, translation: null });
+  const pendingColumnBehaviorRef = useRef<{ source: ScrollBehavior; translation: ScrollBehavior }>({ source: "auto", translation: "auto" });
   const columnProgrammaticRef = useRef<{ source: number | null; translation: number | null }>({ source: null, translation: null });
   const finalSegmentGateRef = useRef(createFinalSegmentGate());
 
@@ -470,7 +470,18 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
     columnProgrammaticRef.current[column] = window.setTimeout(() => { columnProgrammaticRef.current[column] = null; }, behavior === "smooth" ? 700 : 80);
     const offset = (targetRect.top + targetRect.height / 2) - (visibleRect.top + visibleRect.height / 2);
     container.scrollTo({ top: Math.max(0, container.scrollTop + offset), behavior: behavior === "auto" ? "instant" : behavior });
-  }, [columnFollowing]);
+  }, []);
+
+  const scheduleColumnScroll = useCallback((column: "source" | "translation", behavior: ScrollBehavior = "auto") => {
+    if (behavior === "smooth") pendingColumnBehaviorRef.current[column] = "smooth";
+    if (columnScrollFramesRef.current[column] !== null) return;
+    columnScrollFramesRef.current[column] = window.requestAnimationFrame(() => {
+      columnScrollFramesRef.current[column] = null;
+      const nextBehavior = pendingColumnBehaviorRef.current[column];
+      pendingColumnBehaviorRef.current[column] = "auto";
+      scrollColumnIntoView(column, nextBehavior);
+    });
+  }, [scrollColumnIntoView]);
 
   const scheduleLiveScroll = useCallback((behavior: ScrollBehavior = "auto") => {
     if (behavior === "smooth") pendingScrollBehaviorRef.current = "smooth";
@@ -501,15 +512,20 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
 
   useEffect(() => {
     if (tab !== "transcript" || !partial.source || !columnFollowing.source) return;
-    const frame = window.requestAnimationFrame(() => scrollColumnIntoView("source", "smooth"));
-    return () => window.cancelAnimationFrame(frame);
-  }, [columnFollowing.source, partial.sequence, scrollColumnIntoView, tab]);
+    scheduleColumnScroll("source", "auto");
+  }, [columnFollowing.source, partial.source, scheduleColumnScroll, tab]);
 
   useEffect(() => {
     if (tab !== "transcript" || !partial.translation || !columnFollowing.translation) return;
-    const frame = window.requestAnimationFrame(() => scrollColumnIntoView("translation", "smooth"));
-    return () => window.cancelAnimationFrame(frame);
-  }, [columnFollowing.translation, partial.sequence, scrollColumnIntoView, tab]);
+    scheduleColumnScroll("translation", "auto");
+  }, [columnFollowing.translation, partial.translation, liveTranslation.displayed, scheduleColumnScroll, tab]);
+
+  useEffect(() => {
+    if (tab !== "transcript" || (!partial.source && !partial.translation)) return;
+    if (partial.sequence === 0) return;
+    scheduleColumnScroll("source", "smooth");
+    scheduleColumnScroll("translation", "smooth");
+  }, [partial.sequence, scheduleColumnScroll, tab]);
 
   useEffect(() => {
     if (!workspace.settings.autoScroll || !autoFollowing || tab !== "transcript" || !liveRef.current || typeof ResizeObserver === "undefined") return;
@@ -524,10 +540,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
       for (const column of ["source", "translation"] as const) {
         if (!columnFollowing[column]) continue;
         if (columnScrollFramesRef.current[column] !== null) continue;
-        columnScrollFramesRef.current[column] = window.requestAnimationFrame(() => {
-          columnScrollFramesRef.current[column] = null;
-          scrollColumnIntoView(column, "auto");
-        });
+        scheduleColumnScroll(column, "auto");
       }
     });
     if (sourceTextRef.current) observer.observe(sourceTextRef.current);
@@ -802,12 +815,14 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
           {(visibleSegments.length || partial.source || partial.translation || tab === "bookmarks") ? <div ref={(element) => { liveRef.current = element; }} className={styles.transcriptStream}>
             <div ref={sourceColumnRef} className={styles.transcriptColumn} tabIndex={0} onWheel={(event) => stopColumnFollowing("source", event)} onTouchMove={(event) => stopColumnFollowing("source", event)} onKeyDown={(event) => { if (["ArrowUp", "PageUp", "Home"].includes(event.key)) stopColumnFollowing("source", event); }}>
               <div className={styles.columnTitle}>English</div>
+              <div className={styles.columnRunway} aria-hidden="true" />
               {visibleSegments.map((segment) => <TranscriptRow key={`${segment.id}-source`} segment={segment} side="source" query={query} editing={editingId === segment.id} scrollRef={latestAnchorId === segment.id && !hasLiveContent ? (element) => { sourceAnchorRef.current = element; } : undefined} onBookmark={bookmark} onAsk={askAI} onEdit={setEditingId} onSaveEdit={saveEdit} />)}
               {tab === "bookmarks" && !filteredSegments.length ? <div className={styles.emptySmall}><Icon name="bookmark" /><p>No bookmarks yet.</p></div> : null}
               {tab === "transcript" && (partial.source || partial.translation) ? <div className={styles.liveSegment}><span className={styles.liveLabel}>Live</span><div className={styles.liveColumn}>{liveSourceSentences.length ? liveSourceSentences.map((sentence, index) => <p key={`live-source-${index}`} ref={index === liveSourceSentences.length - 1 ? (element) => { sourceTextRef.current = element; } : undefined} className={styles.sourceText}>{sentence}{index === liveSourceSentences.length - 1 ? <i className={styles.cursor} /> : null}</p>) : null}</div></div> : null}
             </div>
             <div ref={translationColumnRef} className={styles.transcriptColumn} tabIndex={0} onWheel={(event) => stopColumnFollowing("translation", event)} onTouchMove={(event) => stopColumnFollowing("translation", event)} onKeyDown={(event) => { if (["ArrowUp", "PageUp", "Home"].includes(event.key)) stopColumnFollowing("translation", event); }}>
               <div className={styles.columnTitle}>中文</div>
+              <div className={styles.columnRunway} aria-hidden="true" />
               {visibleSegments.map((segment) => <TranscriptRow key={`${segment.id}-translation`} segment={segment} side="translation" query={query} editing={false} scrollRef={latestAnchorId === segment.id && !hasLiveContent ? (element) => { translationAnchorRef.current = element; } : undefined} onBookmark={bookmark} onAsk={askAI} onEdit={setEditingId} onSaveEdit={saveEdit} />)}
               {tab === "transcript" && (partial.source || partial.translation) ? <div className={styles.liveSegment}><span className={styles.liveLabel}>Live</span><div className={styles.liveColumn}>{liveTranslationSentences.length ? liveTranslationSentences.map((sentence, index) => <p key={`live-translation-${index}`} ref={index === liveTranslationSentences.length - 1 ? (element) => { translationTextRef.current = element; } : undefined} className={styles.translationText}>{sentence}</p>) : <p className={styles.translationText}>Translating…</p>}</div></div> : null}
             </div>
