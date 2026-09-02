@@ -276,6 +276,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
   const columnScrollFramesRef = useRef<{ source: number | null; translation: number | null }>({ source: null, translation: null });
   const pendingColumnBehaviorRef = useRef<{ source: ScrollBehavior; translation: ScrollBehavior }>({ source: "auto", translation: "auto" });
   const columnProgrammaticRef = useRef<{ source: number | null; translation: number | null }>({ source: null, translation: null });
+  const columnPointerIntentRef = useRef({ source: false, translation: false });
   const finalSegmentGateRef = useRef(createFinalSegmentGate());
 
   const activeSession = workspace.sessions.find((session) => session.id === workspace.activeSessionId) || workspace.sessions[0];
@@ -528,6 +529,14 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
   }, [partial.sequence, scheduleColumnScroll, tab]);
 
   useEffect(() => {
+    // A final event clears partial before the new row is rendered. Keep the
+    // completed row centered without depending on a partial payload.
+    if (tab !== "transcript") return;
+    if (columnFollowing.source) scheduleColumnScroll("source", "smooth");
+    if (columnFollowing.translation) scheduleColumnScroll("translation", "smooth");
+  }, [activeSession.segments.length, columnFollowing, latestAnchorId, scheduleColumnScroll, tab]);
+
+  useEffect(() => {
     if (!workspace.settings.autoScroll || !autoFollowing || tab !== "transcript" || !liveRef.current || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => scheduleLiveScroll("auto"));
     observer.observe(liveRef.current);
@@ -574,6 +583,11 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
       setSettingsOpen(true);
       return;
     }
+    manualScrollRef.current = false;
+    userScrollLockRef.current = false;
+    columnPointerIntentRef.current = { source: false, translation: false };
+    setAutoFollowing(true);
+    setColumnFollowing({ source: true, translation: true });
     void refreshProviderStatus();
     const startedAt = new Date().toISOString();
     updateSession(activeSession.id, (session) => ({ ...session, duration: 0, startedAt, endedAt: null, status: "recording", provider: "qwen" }));
@@ -728,6 +742,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
   const liveTranslationSentences = splitSentences(liveTranslation.displayed, "zh");
   const stopColumnFollowing = useCallback((column: "source" | "translation", event: SyntheticEvent) => {
     event.stopPropagation();
+    columnPointerIntentRef.current[column] = false;
     const frame = columnScrollFramesRef.current[column];
     if (frame !== null) window.cancelAnimationFrame(frame);
     columnScrollFramesRef.current[column] = null;
@@ -736,7 +751,17 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
     columnProgrammaticRef.current[column] = null;
     setColumnFollowing((current) => ({ ...current, [column]: false }));
   }, []);
-
+  const onColumnPointerDown = useCallback((column: "source" | "translation") => {
+    columnPointerIntentRef.current[column] = true;
+  }, []);
+  const onColumnPointerEnd = useCallback((column: "source" | "translation") => {
+    columnPointerIntentRef.current[column] = false;
+  }, []);
+  const onColumnScroll = useCallback((column: "source" | "translation", event: SyntheticEvent) => {
+    // A delayed scroll event from scrollTo() has no active pointer intent.
+    if (!columnPointerIntentRef.current[column]) return;
+    stopColumnFollowing(column, event);
+  }, [stopColumnFollowing]);
   return <div className={`${styles.app} ${sidebarCollapsed ? styles.appSidebarCollapsed : ""}`}>
     <iframe className={styles.brandOrbsBackground} src="/backgrounds/brand-orbs-codex.html" title="" aria-hidden="true" tabIndex={-1} />
     <button className={styles.mobileMenu} onClick={() => setSidebarOpen(true)} aria-label="Open lecture history"><Icon name="menu" /></button>
@@ -813,14 +838,14 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
           {!activeSession.segments.length && !partial.source ? <div className={styles.emptyState}><h2>Start a lecture</h2><p>Live transcription, translation and AI notes.</p>{providerStatusLoaded && !providerStatus.qwen && !providerStatus.tencent ? <div className={styles.setupNotice}><strong>Translation setup required</strong><span>Qwen and Tencent are not configured on this server.</span><button onClick={() => setSettingsOpen(true)}>View API status</button></div> : null}<button onClick={startLecture}><Icon name="mic" /> Start lecture</button></div> : null}
           {!showOlder && filteredSegments.length > 500 ? <button className={styles.loadOlder} onClick={() => setShowOlder(true)}>Show {filteredSegments.length - 500} older segments</button> : null}
           {(visibleSegments.length || partial.source || partial.translation || tab === "bookmarks") ? <div ref={(element) => { liveRef.current = element; }} className={styles.transcriptStream}>
-            <div ref={sourceColumnRef} className={styles.transcriptColumn} tabIndex={0} onWheel={(event) => stopColumnFollowing("source", event)} onTouchMove={(event) => stopColumnFollowing("source", event)} onKeyDown={(event) => { if (["ArrowUp", "PageUp", "Home"].includes(event.key)) stopColumnFollowing("source", event); }}>
+            <div ref={sourceColumnRef} className={styles.transcriptColumn} tabIndex={0} onScroll={(event) => onColumnScroll("source", event)} onPointerDown={() => onColumnPointerDown("source")} onPointerUp={() => onColumnPointerEnd("source")} onPointerCancel={() => onColumnPointerEnd("source")} onWheel={(event) => stopColumnFollowing("source", event)} onTouchMove={(event) => stopColumnFollowing("source", event)} onKeyDown={(event) => { if (["ArrowUp", "PageUp", "Home"].includes(event.key)) stopColumnFollowing("source", event); }}>
               <div className={styles.columnTitle}>English</div>
               <div className={styles.columnRunway} aria-hidden="true" />
               {visibleSegments.map((segment) => <TranscriptRow key={`${segment.id}-source`} segment={segment} side="source" query={query} editing={editingId === segment.id} scrollRef={latestAnchorId === segment.id && !hasLiveContent ? (element) => { sourceAnchorRef.current = element; } : undefined} onBookmark={bookmark} onAsk={askAI} onEdit={setEditingId} onSaveEdit={saveEdit} />)}
               {tab === "bookmarks" && !filteredSegments.length ? <div className={styles.emptySmall}><Icon name="bookmark" /><p>No bookmarks yet.</p></div> : null}
               {tab === "transcript" && (partial.source || partial.translation) ? <div className={styles.liveSegment}><span className={styles.liveLabel}>Live</span><div className={styles.liveColumn}>{liveSourceSentences.length ? liveSourceSentences.map((sentence, index) => <p key={`live-source-${index}`} ref={index === liveSourceSentences.length - 1 ? (element) => { sourceTextRef.current = element; } : undefined} className={styles.sourceText}>{sentence}{index === liveSourceSentences.length - 1 ? <i className={styles.cursor} /> : null}</p>) : null}</div></div> : null}
             </div>
-            <div ref={translationColumnRef} className={styles.transcriptColumn} tabIndex={0} onWheel={(event) => stopColumnFollowing("translation", event)} onTouchMove={(event) => stopColumnFollowing("translation", event)} onKeyDown={(event) => { if (["ArrowUp", "PageUp", "Home"].includes(event.key)) stopColumnFollowing("translation", event); }}>
+            <div ref={translationColumnRef} className={styles.transcriptColumn} tabIndex={0} onScroll={(event) => onColumnScroll("translation", event)} onPointerDown={() => onColumnPointerDown("translation")} onPointerUp={() => onColumnPointerEnd("translation")} onPointerCancel={() => onColumnPointerEnd("translation")} onWheel={(event) => stopColumnFollowing("translation", event)} onTouchMove={(event) => stopColumnFollowing("translation", event)} onKeyDown={(event) => { if (["ArrowUp", "PageUp", "Home"].includes(event.key)) stopColumnFollowing("translation", event); }}>
               <div className={styles.columnTitle}>中文</div>
               <div className={styles.columnRunway} aria-hidden="true" />
               {visibleSegments.map((segment) => <TranscriptRow key={`${segment.id}-translation`} segment={segment} side="translation" query={query} editing={false} scrollRef={latestAnchorId === segment.id && !hasLiveContent ? (element) => { translationAnchorRef.current = element; } : undefined} onBookmark={bookmark} onAsk={askAI} onEdit={setEditingId} onSaveEdit={saveEdit} />)}

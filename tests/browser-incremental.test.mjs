@@ -31,16 +31,14 @@ test("only a semantic boundary opens the legacy stable phrase gate", () => {
   assert.equal(hasSemanticBoundary("A complete sentence."), true);
 });
 
-test("rolling previews send whole stable prefixes at bounded intervals", () => {
+test("rolling previews send stable current prefixes before browser finalization", () => {
   const short = "This is stable";
-  assert.deepEqual(planInterimTranslation({ sourceText: short, stableText: short }), { text: short, mode: "replace" });
-  assert.equal(planInterimTranslation({ sourceText: "This is stable but unfinished", stableText: short }), null);
-  const firstLong = "one two three four five six seven eight nine ten";
-  assert.deepEqual(planInterimTranslation({ sourceText: `${firstLong} eleven`, stableText: firstLong, lastPreviewText: short, interimCount: 1 }), { text: firstLong, mode: "replace" });
-  assert.equal(planInterimTranslation({ sourceText: "one two three four five six seven eight nine ten eleven twelve thirteen", stableText: "one two three four five six seven eight nine ten eleven twelve", lastPreviewText: firstLong, interimCount: 2 }), null);
-  const third = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen";
-  assert.deepEqual(planInterimTranslation({ sourceText: `${third} eighteen`, stableText: third, lastPreviewText: firstLong, interimCount: 2 }), { text: third, mode: "replace" });
-  assert.equal(planInterimTranslation({ sourceText: `${third} eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four`, stableText: `${third} eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four`, lastPreviewText: third, interimCount: 3 }), null);
+  assert.deepEqual(planInterimTranslation({ sourceText: "Chrome heard this complete prefix", stableText: "" }), { text: "Chrome heard this complete prefix", mode: "replace" });
+  assert.deepEqual(planInterimTranslation({ sourceText: "This is stable but unfinished", stableText: short }), { text: short, mode: "replace" });
+  assert.equal(planInterimTranslation({ sourceText: "This is stable but unfinished", stableText: short, lastPreviewText: short }), null);
+  const nextPrefix = "This is stable but unfinished while the lecturer speaks today";
+  assert.deepEqual(planInterimTranslation({ sourceText: `${nextPrefix} continues`, stableText: nextPrefix, lastPreviewText: short, interimCount: 1 }), { text: nextPrefix, mode: "replace" });
+  assert.equal(planInterimTranslation({ sourceText: "one two three four five six seven eight nine", stableText: "one two three four five six seven eight nine", lastPreviewText: nextPrefix, interimCount: 3 }), null);
 });
 
 test("preview results publish, drain, or discard according to the current block", () => {

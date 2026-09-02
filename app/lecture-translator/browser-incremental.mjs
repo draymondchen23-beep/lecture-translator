@@ -17,6 +17,8 @@ export function coalescePendingWords(pending, next) {
 }
 
 export const MAX_INTERIM_TRANSLATIONS = 3;
+export const MIN_PREVIEW_WORDS = 3;
+export const PREVIEW_GROWTH_WORDS = 6;
 
 export function hasSemanticBoundary(text) {
   return /[.!?]["')\]]*$/.test(text.trim());
@@ -29,12 +31,19 @@ export function isReadyStablePhrase(text) {
 export function planInterimTranslation({ sourceText = "", stableText, interimCount = 0, lastPreviewText = "", maxInterims = MAX_INTERIM_TRANSLATIONS }) {
   const source = sourceText.trim();
   const stable = stableText.trim();
-  if (!stable || interimCount >= maxInterims) return null;
-  const wordCount = splitWords(stable).length;
-  if (wordCount < 3 || stable === lastPreviewText) return null;
-  if (wordCount <= 8) return stable === source ? { text: stable, mode: "replace" } : null;
+  // Chrome can promote the first interim result straight to final, before a
+  // second observation exists to establish a stable prefix. Use that complete
+  // current interim once so live translation does not wait for pause/final.
+  const candidate = stable || source;
+  if (!candidate || interimCount >= maxInterims) return null;
+  const wordCount = splitWords(candidate).length;
+  if (wordCount < MIN_PREVIEW_WORDS || candidate === lastPreviewText) return null;
+  if (hasSemanticBoundary(candidate)) return { text: candidate, mode: "replace" };
   const previousWords = splitWords(lastPreviewText).length;
-  if (!previousWords || wordCount - previousWords >= 7) return { text: stable, mode: "replace" };
+  // `stable` deliberately trails the latest browser interim result by one
+  // observation, so requiring it to equal sourceText suppresses short live
+  // previews until Chrome emits a final result.
+  if (!previousWords || wordCount - previousWords >= PREVIEW_GROWTH_WORDS) return { text: candidate, mode: "replace" };
   return null;
 }
 

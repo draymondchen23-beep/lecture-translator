@@ -45,6 +45,8 @@ type FallbackLiveBlock = {
   lastPreviewText: string;
   pendingPreviewText: string;
   previewWorkerQueued: boolean;
+  activePreviewText: string;
+  previewTask: Promise<void> | null;
   requestIndex: number;
   context: string;
   interimSource: string;
@@ -89,7 +91,8 @@ export function useRealtimeLecture(options: Options) {
   const fallbackSessionRef = useRef("");
   const fallbackContextRef = useRef("");
   const fallbackFinalIndexesRef = useRef(new Set<number>());
-  const fallbackQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const fallbackPreviewQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const fallbackFinalQueueRef = useRef<Promise<void>>(Promise.resolve());
   const fallbackWorkRef = useRef(new Set<Promise<void>>());
   const fallbackRestartRef = useRef<number | null>(null);
   const fallbackEpochRef = useRef(0);
@@ -241,10 +244,11 @@ export function useRealtimeLecture(options: Options) {
     block.previewWorkerQueued = true;
     const sessionId = fallbackSessionRef.current;
     const epoch = fallbackEpochRef.current;
-    const task = fallbackQueueRef.current.then(async () => {
+    const task = fallbackPreviewQueueRef.current.then(async () => {
       while (epoch === fallbackEpochRef.current && !block.finalRequested && block.pendingPreviewText) {
         const sourceText = block.pendingPreviewText;
         block.pendingPreviewText = "";
+        block.activePreviewText = sourceText;
         try {
           setState("PROCESSING");
           const translated = await translateFallback(sessionId, sourceText, fallbackRequestSegmentId(sessionId, block.sequence, block.requestIndex++), "accurate", block.context);
@@ -260,22 +264,30 @@ export function useRealtimeLecture(options: Options) {
         } catch (error) {
           if (epoch !== fallbackEpochRef.current) return;
           emit({ type: "error", message: error instanceof Error ? error.message : "Translation failed.", recoverable: true });
+        } finally {
+          block.activePreviewText = "";
         }
       }
       if (fallbackActiveRef.current && !pausedRef.current) setState("LISTENING");
-    }).finally(() => { block.previewWorkerQueued = false; });
-    fallbackQueueRef.current = task;
+    }).finally(() => {
+      block.previewWorkerQueued = false;
+      if (block.previewTask === task) block.previewTask = null;
+    });
+    block.previewTask = task;
+    fallbackPreviewQueueRef.current = task;
     trackFallbackWork(task);
   }, [emit, trackFallbackWork, translateFallback]);
 
   const queueFallbackFinal = useCallback((block: FallbackLiveBlock) => {
     const sessionId = fallbackSessionRef.current;
     const epoch = fallbackEpochRef.current;
-    const task = fallbackQueueRef.current.then(async () => {
+    const task = fallbackFinalQueueRef.current.then(async () => {
       const sourceText = block.finalSource;
       if (epoch !== fallbackEpochRef.current || !sourceText) return;
       try {
         setState("PROCESSING");
+        if (block.activePreviewText === sourceText) await block.previewTask;
+        if (epoch !== fallbackEpochRef.current) return;
         const translated = block.interimQuality === "accurate" && block.interimSource === sourceText
           ? block.interimTranslation
           : await translateFallback(sessionId, sourceText, fallbackFinalCorrectionSegmentId(sessionId, block.sequence), "accurate", block.context);
@@ -291,7 +303,7 @@ export function useRealtimeLecture(options: Options) {
       emit({ type: "segment.final", sequence: block.sequence, sourceText, translatedText: block.translatedText, startedAt: block.startedAt, endedAt: Date.now(), provider: "qwen", refined: true });
       if (fallbackActiveRef.current && !pausedRef.current) setState("LISTENING");
     });
-    fallbackQueueRef.current = task;
+    fallbackFinalQueueRef.current = task;
     trackFallbackWork(task);
   }, [emit, trackFallbackWork, translateFallback]);
 
@@ -324,7 +336,8 @@ export function useRealtimeLecture(options: Options) {
     fallbackSessionRef.current = crypto.randomUUID();
     fallbackContextRef.current = "";
     fallbackFinalIndexesRef.current = new Set();
-    fallbackQueueRef.current = Promise.resolve();
+    fallbackPreviewQueueRef.current = Promise.resolve();
+    fallbackFinalQueueRef.current = Promise.resolve();
     fallbackWorkRef.current.clear();
     fallbackEpochRef.current += 1;
     clearFallbackBlock();
@@ -346,7 +359,7 @@ export function useRealtimeLecture(options: Options) {
           fallbackFinalIndexesRef.current.add(index);
           const block = fallbackBlockRef.current || {
             sequence: fallbackSequenceRef.current++, startedAt: fallbackStartedAtRef.current || Date.now(), sourceText: text,
-            translatedText: "", previousWords: [], stableWords: [], interimCount: 0, lastPreviewText: "", pendingPreviewText: "", previewWorkerQueued: false, requestIndex: 0,
+            translatedText: "", previousWords: [], stableWords: [], interimCount: 0, lastPreviewText: "", pendingPreviewText: "", previewWorkerQueued: false, activePreviewText: "", previewTask: null, requestIndex: 0,
             context: fallbackContextRef.current, interimSource: "", interimTranslation: "", interimQuality: null, finalSource: null, finalRequested: false,
           };
           if (block.finalRequested) continue;
@@ -366,7 +379,7 @@ export function useRealtimeLecture(options: Options) {
         if (!fallbackStartedAtRef.current) fallbackStartedAtRef.current = Date.now();
         const block = fallbackBlockRef.current || {
           sequence: fallbackSequenceRef.current++, startedAt: fallbackStartedAtRef.current, sourceText: "",
-          translatedText: "", previousWords: [], stableWords: [], interimCount: 0, lastPreviewText: "", pendingPreviewText: "", previewWorkerQueued: false, requestIndex: 0,
+          translatedText: "", previousWords: [], stableWords: [], interimCount: 0, lastPreviewText: "", pendingPreviewText: "", previewWorkerQueued: false, activePreviewText: "", previewTask: null, requestIndex: 0,
           context: fallbackContextRef.current, interimSource: "", interimTranslation: "", interimQuality: null, finalSource: null, finalRequested: false,
         };
         const interimWords = splitWords(interim);

@@ -76,6 +76,12 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(page, /translationColumnRef/);
   assert.match(page, /sourceAnchorRef/);
   assert.match(page, /translationAnchorRef/);
+  assert.match(page, /sourceColumnRef[\s\S]{0,300}onScroll=/);
+  assert.match(page, /translationColumnRef[\s\S]{0,300}onScroll=/);
+  assert.match(page, /columnPointerIntentRef/);
+  assert.match(page, /startLecture[\s\S]{0,1200}setAutoFollowing\(true\)/);
+  assert.match(page, /startLecture[\s\S]{0,1200}setColumnFollowing\(\{ source: true, translation: true \}\)/);
+  assert.match(page, /activeSession\.segments\.length, columnFollowing, latestAnchorId/);
   assert.match(page, /styles\.transcriptColumn/);
   assert.match(page, /splitSentences/);
   assert.match(page, /styles\.columnTitle/);
