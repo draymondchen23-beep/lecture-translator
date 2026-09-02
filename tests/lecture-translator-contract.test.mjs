@@ -33,7 +33,10 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(hook, /fallbackFinalCorrectionSegmentId/);
   assert.match(hook, /quality: "accurate"/);
   assert.match(hook, /fallbackRequestSegmentId\(sessionId, block\.sequence, block\.requestIndex\+\+\), context/);
-  assert.match(hook, /newCompletedSentenceText\(\{ sourceText: stableText, requestedSourcePrefix: block\.requestedSourcePrefix \}\)/);
+  assert.match(hook, /tentativeTranslationPlan\(\{/);
+  assert.match(hook, /NATURAL_PAUSE_MS/);
+  assert.match(hook, /window\.setTimeout\([\s\S]{0,400}NATURAL_PAUSE_MS/);
+  assert.match(hook, /clearFallbackPauseTimer\(\)/);
   assert.match(hook, /await block\.previewTask/);
   assert.match(hook, /block\.translatedSourcePrefix !== sourceText/);
   assert.equal((hook.match(/fallbackFinalCorrectionSegmentId\(sessionId, block\.sequence\)/g) || []).length, 1);

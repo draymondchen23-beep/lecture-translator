@@ -15,10 +15,35 @@ export function completedSentencePrefix(text) {
   return last && last.index !== undefined ? source.slice(0, last.index + last[0].trimEnd().length).trim() : "";
 }
 
-export function newCompletedSentenceText({ sourceText = "", requestedSourcePrefix = "" }) {
-  const completed = completedSentencePrefix(sourceText);
-  if (!completed || !completed.startsWith(requestedSourcePrefix)) return "";
-  return completed.slice(requestedSourcePrefix.length).trim();
+export function hasTokenPrefix(sourceText = "", prefix = "") {
+  const source = sourceText.trim();
+  const requested = prefix.trim();
+  if (!requested) return true;
+  if (source === requested) return true;
+  const next = source[requested.length];
+  return source.startsWith(requested) && typeof next === "string" && /[\s.,!?;:'"()[\]{}—–-]/u.test(next);
+}
+
+export const NATURAL_PAUSE_MS = 800;
+export const STABLE_WORDS_PER_PREVIEW = 12;
+
+export function shouldCommitAfterPause(elapsedMs, pauseMs = NATURAL_PAUSE_MS) {
+  return elapsedMs >= pauseMs;
+}
+
+export function tentativeTranslationPlan({ sourceText = "", stableText = "", requestedSourcePrefix = "", force = false, wordThreshold = STABLE_WORDS_PER_PREVIEW }) {
+  const source = sourceText.trim();
+  const stable = stableText.trim();
+  const completed = completedSentencePrefix(stable);
+  let sourcePrefix = "";
+  if (completed && hasTokenPrefix(completed, requestedSourcePrefix) && completed !== requestedSourcePrefix) sourcePrefix = completed;
+  else if (force && hasTokenPrefix(source, requestedSourcePrefix) && source !== requestedSourcePrefix) sourcePrefix = source;
+  else if (hasTokenPrefix(stable, requestedSourcePrefix) && stable !== requestedSourcePrefix) {
+    const tail = stable.slice(requestedSourcePrefix.length).trim();
+    if (splitWords(tail).length >= wordThreshold) sourcePrefix = stable;
+  }
+  if (!sourcePrefix) return null;
+  return { sourcePrefix, text: sourcePrefix.slice(requestedSourcePrefix.length).trim() };
 }
 
 export function appendAccurateTranslation(accumulated = "", next = "") {

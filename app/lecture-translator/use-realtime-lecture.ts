@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { appendAccurateTranslation, bestTranscript, completedSentencePrefix, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, newCompletedSentenceText, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, splitWords, stableWords } from "./browser-incremental.mjs";
+import { appendAccurateTranslation, bestTranscript, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, hasTokenPrefix, NATURAL_PAUSE_MS, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, splitWords, stableWords, tentativeTranslationPlan } from "./browser-incremental.mjs";
 import type { LectureState, ProviderPreference, RealtimeServerEvent } from "./types";
 
 type Options = {
@@ -91,6 +91,7 @@ export function useRealtimeLecture(options: Options) {
   const fallbackFinalQueueRef = useRef<Promise<void>>(Promise.resolve());
   const fallbackWorkRef = useRef(new Set<Promise<void>>());
   const fallbackRestartRef = useRef<number | null>(null);
+  const fallbackPauseTimerRef = useRef<number | null>(null);
   const fallbackEpochRef = useRef(0);
   const fallbackBlockRef = useRef<FallbackLiveBlock | null>(null);
 
@@ -209,6 +210,11 @@ export function useRealtimeLecture(options: Options) {
     if (DEBUG && queuedRef.current.length) trace("audio.queued", { bytes: chunk.byteLength, queued: queuedRef.current.length });
   }, []);
 
+  const clearFallbackPauseTimer = useCallback(() => {
+    if (fallbackPauseTimerRef.current !== null) window.clearTimeout(fallbackPauseTimerRef.current);
+    fallbackPauseTimerRef.current = null;
+  }, []);
+
   const clearFallbackBlock = useCallback(() => {
     fallbackBlockRef.current = null;
   }, []);
@@ -270,6 +276,30 @@ export function useRealtimeLecture(options: Options) {
     trackFallbackWork(task);
   }, [emit, trackFallbackWork, translateFallback]);
 
+  const queueTentativePreview = useCallback((block: FallbackLiveBlock, force = false) => {
+    if (block.finalRequested) return;
+    const plan = tentativeTranslationPlan({
+      sourceText: block.sourceText,
+      stableText: block.stableWords.join(" "),
+      requestedSourcePrefix: block.requestedSourcePrefix,
+      force,
+    });
+    if (!plan) return;
+    block.requestedSourcePrefix = plan.sourcePrefix;
+    block.pendingSentenceText = `${block.pendingSentenceText} ${plan.text}`.trim();
+    queueFallbackPreview(block);
+  }, [queueFallbackPreview]);
+
+  const scheduleFallbackPause = useCallback((block: FallbackLiveBlock) => {
+    clearFallbackPauseTimer();
+    const epoch = fallbackEpochRef.current;
+    fallbackPauseTimerRef.current = window.setTimeout(() => {
+      fallbackPauseTimerRef.current = null;
+      if (epoch !== fallbackEpochRef.current || pausedRef.current || !fallbackActiveRef.current || fallbackBlockRef.current !== block || block.finalRequested) return;
+      queueTentativePreview(block, true);
+    }, NATURAL_PAUSE_MS);
+  }, [clearFallbackPauseTimer, queueTentativePreview]);
+
   const queueFallbackFinal = useCallback((block: FallbackLiveBlock) => {
     const sessionId = fallbackSessionRef.current;
     const epoch = fallbackEpochRef.current;
@@ -282,7 +312,7 @@ export function useRealtimeLecture(options: Options) {
         if (epoch !== fallbackEpochRef.current) return;
         let translated = block.translatedText;
         if (block.translatedSourcePrefix !== sourceText) {
-          const hasTranslatedPrefix = sourceText.startsWith(block.translatedSourcePrefix);
+          const hasTranslatedPrefix = hasTokenPrefix(sourceText, block.translatedSourcePrefix);
           const tail = hasTranslatedPrefix ? sourceText.slice(block.translatedSourcePrefix.length).trim() : sourceText;
           const context = hasTranslatedPrefix && block.translatedSourcePrefix
             ? contextTail(`${block.context} ${block.translatedSourcePrefix}`, 400)
@@ -307,6 +337,7 @@ export function useRealtimeLecture(options: Options) {
   }, [emit, trackFallbackWork, translateFallback]);
 
   const flushFallbackBlock = useCallback(() => {
+    clearFallbackPauseTimer();
     const block = fallbackBlockRef.current;
     if (!block) return;
     fallbackBlockRef.current = null;
@@ -317,7 +348,7 @@ export function useRealtimeLecture(options: Options) {
       queueFallbackFinal(block);
     }
     fallbackStartedAtRef.current = Date.now();
-  }, [queueFallbackFinal]);
+  }, [clearFallbackPauseTimer, queueFallbackFinal]);
 
   const startBrowserFallback = useCallback(() => {
     const speechWindow = window as unknown as {
@@ -339,6 +370,7 @@ export function useRealtimeLecture(options: Options) {
     fallbackFinalQueueRef.current = Promise.resolve();
     fallbackWorkRef.current.clear();
     fallbackEpochRef.current += 1;
+    clearFallbackPauseTimer();
     clearFallbackBlock();
 
     const recognition = new SpeechRecognition();
@@ -364,6 +396,7 @@ export function useRealtimeLecture(options: Options) {
           block.sourceText = text;
           block.finalRequested = true;
           block.finalSource = text;
+          clearFallbackPauseTimer();
           fallbackContextRef.current = contextTail(text);
           emit({ type: "source.partial", text, sequence: block.sequence, startedAt: block.startedAt });
           queueFallbackFinal(block);
@@ -385,14 +418,8 @@ export function useRealtimeLecture(options: Options) {
         block.sourceText = interim;
         fallbackBlockRef.current = block;
         emit({ type: "source.partial", text: interim, sequence: block.sequence, startedAt: block.startedAt });
-        const stableText = block.stableWords.join(" ");
-        const completed = completedSentencePrefix(stableText);
-        const newSentence = newCompletedSentenceText({ sourceText: stableText, requestedSourcePrefix: block.requestedSourcePrefix });
-        if (completed && newSentence) {
-          block.requestedSourcePrefix = completed;
-          block.pendingSentenceText = `${block.pendingSentenceText} ${newSentence}`.trim();
-          queueFallbackPreview(block);
-        }
+        queueTentativePreview(block);
+        scheduleFallbackPause(block);
         setState("SPEAKING");
       }
     };
@@ -412,7 +439,7 @@ export function useRealtimeLecture(options: Options) {
     recognition.start();
     emit({ type: "state", state: "LISTENING", provider: "qwen", message: "Browser transcription compatibility mode" });
     return true;
-  }, [cleanupSocket, clearFallbackBlock, emit, flushFallbackBlock, queueFallbackFinal, queueFallbackPreview]);
+  }, [cleanupSocket, clearFallbackBlock, clearFallbackPauseTimer, emit, flushFallbackBlock, queueFallbackFinal, queueTentativePreview, scheduleFallbackPause]);
 
   const startMicrophone = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser cannot access a microphone.");
@@ -502,6 +529,7 @@ export function useRealtimeLecture(options: Options) {
 
   const pause = useCallback(async () => {
     pausedRef.current = true;
+    clearFallbackPauseTimer();
     contextRef.current?.suspend().catch(() => undefined);
     if (fallbackActiveRef.current) speechRef.current?.stop();
     socketRef.current?.send(JSON.stringify({ type: "session.pause" }));
@@ -510,10 +538,11 @@ export function useRealtimeLecture(options: Options) {
     await Promise.race([waitForFallbackWork(), new Promise<void>((resolve) => window.setTimeout(resolve, 20_000))]);
     fallbackEpochRef.current += 1;
     setState("PAUSED");
-  }, [flushFallbackBlock, waitForFallbackWork]);
+  }, [clearFallbackPauseTimer, flushFallbackBlock, waitForFallbackWork]);
 
   const resume = useCallback(() => {
     pausedRef.current = false;
+    clearFallbackPauseTimer();
     contextRef.current?.resume().catch(() => undefined);
     if (fallbackActiveRef.current) {
       fallbackEpochRef.current += 1;
@@ -523,7 +552,7 @@ export function useRealtimeLecture(options: Options) {
     }
     socketRef.current?.send(JSON.stringify({ type: "session.resume" }));
     setState("LISTENING");
-  }, [clearFallbackBlock]);
+  }, [clearFallbackBlock, clearFallbackPauseTimer]);
 
   const changeProvider = useCallback((provider: ProviderPreference) => {
     socketRef.current?.send(JSON.stringify({ type: "provider.change", provider }));
@@ -535,6 +564,7 @@ export function useRealtimeLecture(options: Options) {
     const socket = socketRef.current;
     await flushPcmRef.current?.();
     pausedRef.current = true;
+    clearFallbackPauseTimer();
     await contextRef.current?.suspend().catch(() => undefined);
     flushFallbackBlock();
     if (fallbackRestartRef.current !== null) window.clearTimeout(fallbackRestartRef.current);
@@ -576,13 +606,14 @@ export function useRealtimeLecture(options: Options) {
     setLevel(0);
     if (DEBUG) setDebug((current) => ({ ...current, micActive: false, rms: 0 }));
     setState("ENDED");
-  }, [cleanupSocket, flushFallbackBlock, waitForFallbackWork]);
+  }, [cleanupSocket, clearFallbackPauseTimer, flushFallbackBlock, waitForFallbackWork]);
 
   useEffect(() => () => {
     intentionalCloseRef.current = true;
     fallbackActiveRef.current = false;
     fallbackContextRef.current = "";
     fallbackEpochRef.current += 1;
+    clearFallbackPauseTimer();
     clearFallbackBlock();
     if (fallbackRestartRef.current !== null) window.clearTimeout(fallbackRestartRef.current);
     speechRef.current?.abort();
@@ -590,7 +621,7 @@ export function useRealtimeLecture(options: Options) {
     if (recorderRef.current?.state !== "inactive") recorderRef.current?.stop();
     streamRef.current?.getTracks().forEach((track) => track.stop());
     contextRef.current?.close().catch(() => undefined);
-  }, [cleanupSocket, clearFallbackBlock]);
+  }, [cleanupSocket, clearFallbackBlock, clearFallbackPauseTimer]);
 
   return { state, level, message, metrics, debug, start, pause, resume, end, changeProvider };
 }
