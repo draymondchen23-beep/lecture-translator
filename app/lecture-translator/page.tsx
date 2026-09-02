@@ -20,6 +20,7 @@ import type {
   Workspace,
 } from "./types";
 import { useRealtimeLecture } from "./use-realtime-lecture";
+import { reducePartialEvent } from "./partial-events.mjs";
 import { createFinalSegmentGate, shouldRefineFinal } from "./incremental-refinement.mjs";
 import { AuthPanel, type SignedInUser } from "./auth-panel";
 
@@ -287,8 +288,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
 
   const onRealtimeEvent = useCallback((event: RealtimeServerEvent) => {
     const sessionId = activeIdRef.current;
-    if (event.type === "source.partial") setPartial((current) => ({ ...current, source: event.text, sequence: event.sequence }));
-    if (event.type === "translation.partial") setPartial((current) => ({ ...current, translation: event.text, sequence: event.sequence }));
+    if (event.type === "source.partial" || event.type === "translation.partial") setPartial((current) => reducePartialEvent(current, event));
     if (event.type === "state" && event.provider) setActiveProvider(event.provider);
     if (event.type === "provider.switched") {
       setActiveProvider(event.to);
@@ -309,7 +309,7 @@ function LectureTranslatorWorkspace({ user }: { user: SignedInUser }) {
         createdAt: new Date().toISOString(), bookmarked: false, refinementState: event.refined ? "refined" : "idle",
       };
       updateSession(sessionId, (current) => current.segments.some((item) => item.id === segment.id) ? current : { ...current, segments: [...current.segments, segment] });
-      setPartial({ source: "", translation: "", sequence: event.sequence + 1 });
+      setPartial((current) => reducePartialEvent(current, event));
       if (shouldRefineFinal(event) && finalSegmentGateRef.current.claim(sessionId, segment.id)) void refineSegment(sessionId, segment);
     }
   }, [refineSegment, updateSession]);
