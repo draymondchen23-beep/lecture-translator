@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { appendAccurateTranslation, bestTranscript, contextTail, fallbackFinalCorrectionSegmentId, fallbackRequestSegmentId, hasTokenPrefix, NATURAL_PAUSE_MS, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, splitWords, stableWords, tentativeTranslationPlan } from "./browser-incremental.mjs";
+import { bestTranscript, contextTail, fallbackRequestSegmentId, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately } from "./browser-incremental.mjs";
+import { commonStablePrefix, createSentenceTranslationQueue, DEFAULT_BOUNDARY_CONFIG, SentenceAccumulator, textAfterStablePrefix } from "./caption-stabilizer.mjs";
 import type { LectureState, ProviderPreference, RealtimeServerEvent } from "./types";
 
 type Options = {
@@ -34,23 +35,16 @@ type BrowserSpeechRecognition = {
   abort(): void;
 };
 type BrowserSpeechConstructor = new () => BrowserSpeechRecognition;
-type FallbackLiveBlock = {
+type FallbackCommit = {
   sequence: number;
   startedAt: number;
   sourceText: string;
-  translatedText: string;
-  previousWords: string[];
-  stableWords: string[];
   context: string;
-  requestedSourcePrefix: string;
-  translatedSourcePrefix: string;
-  pendingSentenceText: string;
-  previewWorkerQueued: boolean;
-  previewTask: Promise<void> | null;
-  requestIndex: number;
-  finalSource: string | null;
-  finalRequested: boolean;
+  epoch: number;
 };
+type FallbackCaptionUpdate = { stableText: string; displayText: string; commits: Array<{ sourceText: string }> };
+type FallbackTranslationQueue = { enqueue(commit: FallbackCommit): Promise<void>; idle(): Promise<void> };
+type FallbackInterim = { previousText: string; stableText: string };
 
 const SAMPLE_RATE = 16_000;
 const CHUNK_SAMPLES = 1_600;
@@ -87,13 +81,14 @@ export function useRealtimeLecture(options: Options) {
   const fallbackSessionRef = useRef("");
   const fallbackContextRef = useRef("");
   const fallbackFinalIndexesRef = useRef(new Set<number>());
-  const fallbackPreviewQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const fallbackFinalQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const fallbackTranslationQueueRef = useRef<FallbackTranslationQueue | null>(null);
   const fallbackWorkRef = useRef(new Set<Promise<void>>());
   const fallbackRestartRef = useRef<number | null>(null);
   const fallbackPauseTimerRef = useRef<number | null>(null);
   const fallbackEpochRef = useRef(0);
-  const fallbackBlockRef = useRef<FallbackLiveBlock | null>(null);
+  const fallbackRecognitionRunRef = useRef(0);
+  const fallbackAccumulatorRef = useRef<SentenceAccumulator | null>(null);
+  const fallbackInterimRef = useRef<FallbackInterim>({ previousText: "", stableText: "" });
 
   useEffect(() => {
     optionsRef.current = options;
@@ -215,8 +210,8 @@ export function useRealtimeLecture(options: Options) {
     fallbackPauseTimerRef.current = null;
   }, []);
 
-  const clearFallbackBlock = useCallback(() => {
-    fallbackBlockRef.current = null;
+  const clearFallbackAccumulator = useCallback(() => {
+    fallbackAccumulatorRef.current = null;
   }, []);
 
   const trackFallbackWork = useCallback((task: Promise<void>) => {
@@ -241,114 +236,65 @@ export function useRealtimeLecture(options: Options) {
     return result.translation.trim();
   }, []);
 
-  const queueFallbackPreview = useCallback((block: FallbackLiveBlock) => {
-    if (block.previewWorkerQueued) return;
-    block.previewWorkerQueued = true;
+  const translateFallbackCommit = useCallback(async (commit: FallbackCommit) => {
     const sessionId = fallbackSessionRef.current;
-    const epoch = fallbackEpochRef.current;
-    const task = fallbackPreviewQueueRef.current.then(async () => {
-      while (epoch === fallbackEpochRef.current && block.pendingSentenceText) {
-        const sourceText = block.pendingSentenceText;
-        block.pendingSentenceText = "";
-        try {
-          setState("PROCESSING");
-          // Keep the immediately preceding completed source sentences as
-          // continuity context. Unlike the old fast path, this never asks the
-          // model to retranslate them; it only translates `sourceText` once.
-          const context = contextTail(`${block.context} ${block.translatedSourcePrefix}`, 400);
-          const translated = await translateFallback(sessionId, sourceText, fallbackRequestSegmentId(sessionId, block.sequence, block.requestIndex++), context);
-          if (epoch !== fallbackEpochRef.current) return;
-          block.translatedSourcePrefix = `${block.translatedSourcePrefix} ${sourceText}`.trim();
-          block.translatedText = appendAccurateTranslation(block.translatedText, translated);
-          emit({ type: "translation.partial", text: block.translatedText, sequence: block.sequence, startedAt: block.startedAt });
-        } catch (error) {
-          if (epoch !== fallbackEpochRef.current) return;
-          emit({ type: "error", message: error instanceof Error ? error.message : "Translation failed.", recoverable: true });
-        }
-      }
-      if (fallbackActiveRef.current && !pausedRef.current && !block.finalRequested) setState("LISTENING");
-    }).finally(() => {
-      block.previewWorkerQueued = false;
-      if (block.previewTask === task) block.previewTask = null;
-    });
-    block.previewTask = task;
-    fallbackPreviewQueueRef.current = task;
+    const { epoch } = commit;
+    if (epoch !== fallbackEpochRef.current) return;
+    let translatedText = "";
+    try {
+      setState("PROCESSING");
+      // The queued unit is exactly one committed source sentence. Context is
+      // only continuity context; it is never resubmitted for translation.
+      translatedText = await translateFallback(sessionId, commit.sourceText, fallbackRequestSegmentId(sessionId, commit.sequence, 0), commit.context);
+    } catch (error) {
+      if (epoch !== fallbackEpochRef.current) return;
+      emit({ type: "error", message: error instanceof Error ? error.message : "Translation failed.", recoverable: true });
+    }
+    if (epoch !== fallbackEpochRef.current) return;
+    emit({ type: "segment.final", sequence: commit.sequence, sourceText: commit.sourceText, translatedText, startedAt: commit.startedAt, endedAt: Date.now(), provider: "qwen", refined: true });
+    if (fallbackActiveRef.current && !pausedRef.current) setState("LISTENING");
+  }, [emit, translateFallback]);
+
+  const queueFallbackCommit = useCallback((commit: FallbackCommit) => {
+    const task = fallbackTranslationQueueRef.current?.enqueue(commit);
+    if (!task) return;
     trackFallbackWork(task);
-  }, [emit, trackFallbackWork, translateFallback]);
+  }, [trackFallbackWork]);
 
-  const queueTentativePreview = useCallback((block: FallbackLiveBlock, force = false) => {
-    if (block.finalRequested) return;
-    const plan = tentativeTranslationPlan({
-      sourceText: block.sourceText,
-      stableText: block.stableWords.join(" "),
-      requestedSourcePrefix: block.requestedSourcePrefix,
-      force,
-    });
-    if (!plan) return;
-    block.requestedSourcePrefix = plan.sourcePrefix;
-    block.pendingSentenceText = `${block.pendingSentenceText} ${plan.text}`.trim();
-    queueFallbackPreview(block);
-  }, [queueFallbackPreview]);
+  const publishFallbackUpdate = useCallback((update: FallbackCaptionUpdate) => {
+    for (const completed of update.commits) {
+      const sequence = fallbackSequenceRef.current++;
+      const startedAt = fallbackStartedAtRef.current || Date.now();
+      const context = fallbackContextRef.current;
+      fallbackContextRef.current = contextTail(`${fallbackContextRef.current} ${completed.sourceText}`, 400);
+      queueFallbackCommit({ sequence, startedAt, sourceText: completed.sourceText, context, epoch: fallbackEpochRef.current });
+      fallbackStartedAtRef.current = Date.now();
+    }
+    emit({ type: "source.partial", text: update.displayText, sequence: fallbackSequenceRef.current, startedAt: fallbackStartedAtRef.current || Date.now() });
+  }, [emit, queueFallbackCommit]);
 
-  const scheduleFallbackPause = useCallback((block: FallbackLiveBlock) => {
+  const scheduleFallbackPause = useCallback((delay: number = DEFAULT_BOUNDARY_CONFIG.boundaryGraceMs) => {
     clearFallbackPauseTimer();
     const epoch = fallbackEpochRef.current;
-    fallbackPauseTimerRef.current = window.setTimeout(() => {
-      fallbackPauseTimerRef.current = null;
-      if (epoch !== fallbackEpochRef.current || pausedRef.current || !fallbackActiveRef.current || fallbackBlockRef.current !== block || block.finalRequested) return;
-      queueTentativePreview(block, true);
-    }, NATURAL_PAUSE_MS);
-  }, [clearFallbackPauseTimer, queueTentativePreview]);
-
-  const queueFallbackFinal = useCallback((block: FallbackLiveBlock) => {
-    const sessionId = fallbackSessionRef.current;
-    const epoch = fallbackEpochRef.current;
-    const task = fallbackFinalQueueRef.current.then(async () => {
-      const sourceText = block.finalSource;
-      if (epoch !== fallbackEpochRef.current || !sourceText) return;
-      try {
-        setState("PROCESSING");
-        await block.previewTask;
-        if (epoch !== fallbackEpochRef.current) return;
-        let translated = block.translatedText;
-        if (block.translatedSourcePrefix !== sourceText) {
-          const hasTranslatedPrefix = hasTokenPrefix(sourceText, block.translatedSourcePrefix);
-          const tail = hasTranslatedPrefix ? sourceText.slice(block.translatedSourcePrefix.length).trim() : sourceText;
-          const context = hasTranslatedPrefix && block.translatedSourcePrefix
-            ? contextTail(`${block.context} ${block.translatedSourcePrefix}`, 400)
-            : block.context;
-          const correction = await translateFallback(sessionId, tail, fallbackFinalCorrectionSegmentId(sessionId, block.sequence), context);
-          translated = hasTranslatedPrefix ? appendAccurateTranslation(block.translatedText, correction) : correction;
+    const scheduleNext = (nextDelay: number) => {
+      fallbackPauseTimerRef.current = window.setTimeout(() => {
+        fallbackPauseTimerRef.current = null;
+        if (epoch !== fallbackEpochRef.current || pausedRef.current || !fallbackActiveRef.current) return;
+        const update = fallbackAccumulatorRef.current?.advance(Date.now());
+        if (update) {
+          publishFallbackUpdate(update);
+          if (update.stableText) scheduleNext(DEFAULT_BOUNDARY_CONFIG.boundaryGraceMs);
         }
-        if (epoch !== fallbackEpochRef.current) return;
-        block.translatedText = translated;
-        fallbackContextRef.current = contextTail(sourceText);
-        emit({ type: "translation.partial", text: translated, sequence: block.sequence, startedAt: block.startedAt });
-      } catch (error) {
-        if (epoch !== fallbackEpochRef.current) return;
-        emit({ type: "error", message: error instanceof Error ? error.message : "Translation failed.", recoverable: true });
-      }
-      if (epoch !== fallbackEpochRef.current) return;
-      emit({ type: "segment.final", sequence: block.sequence, sourceText, translatedText: block.translatedText, startedAt: block.startedAt, endedAt: Date.now(), provider: "qwen", refined: true });
-      if (fallbackActiveRef.current && !pausedRef.current) setState("LISTENING");
-    });
-    fallbackFinalQueueRef.current = task;
-    trackFallbackWork(task);
-  }, [emit, trackFallbackWork, translateFallback]);
+      }, nextDelay);
+    };
+    scheduleNext(delay);
+  }, [clearFallbackPauseTimer, publishFallbackUpdate]);
 
   const flushFallbackBlock = useCallback(() => {
     clearFallbackPauseTimer();
-    const block = fallbackBlockRef.current;
-    if (!block) return;
-    fallbackBlockRef.current = null;
-    if (block.sourceText && !block.finalRequested) {
-      block.finalRequested = true;
-      block.finalSource = block.sourceText;
-      fallbackContextRef.current = contextTail(block.finalSource);
-      queueFallbackFinal(block);
-    }
-    fallbackStartedAtRef.current = Date.now();
-  }, [clearFallbackPauseTimer, queueFallbackFinal]);
+    const update = fallbackAccumulatorRef.current?.advance(Date.now(), { force: true });
+    if (update) publishFallbackUpdate(update);
+  }, [clearFallbackPauseTimer, publishFallbackUpdate]);
 
   const startBrowserFallback = useCallback(() => {
     const speechWindow = window as unknown as {
@@ -366,12 +312,13 @@ export function useRealtimeLecture(options: Options) {
     fallbackSessionRef.current = crypto.randomUUID();
     fallbackContextRef.current = "";
     fallbackFinalIndexesRef.current = new Set();
-    fallbackPreviewQueueRef.current = Promise.resolve();
-    fallbackFinalQueueRef.current = Promise.resolve();
+    fallbackTranslationQueueRef.current = createSentenceTranslationQueue(translateFallbackCommit);
     fallbackWorkRef.current.clear();
     fallbackEpochRef.current += 1;
+    fallbackRecognitionRunRef.current = 0;
     clearFallbackPauseTimer();
-    clearFallbackBlock();
+    fallbackAccumulatorRef.current = new SentenceAccumulator();
+    fallbackInterimRef.current = { previousText: "", stableText: "" };
 
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
@@ -381,6 +328,7 @@ export function useRealtimeLecture(options: Options) {
     recognition.onresult = (event) => {
       if (!shouldProcessBrowserResult({ fallbackActive: fallbackActiveRef.current, paused: pausedRef.current, intentionalClose: intentionalCloseRef.current })) return;
       let interim = "";
+      let update: FallbackCaptionUpdate | undefined;
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
         const result = event.results[index];
         const text = bestTranscript(result);
@@ -388,40 +336,30 @@ export function useRealtimeLecture(options: Options) {
         if (result.isFinal) {
           if (fallbackFinalIndexesRef.current.has(index)) continue;
           fallbackFinalIndexesRef.current.add(index);
-          const block = fallbackBlockRef.current || {
-            sequence: fallbackSequenceRef.current++, startedAt: fallbackStartedAtRef.current || Date.now(), sourceText: text,
-            translatedText: "", previousWords: [], stableWords: [], context: fallbackContextRef.current, requestedSourcePrefix: "", translatedSourcePrefix: "", pendingSentenceText: "", previewWorkerQueued: false, previewTask: null, requestIndex: 0, finalSource: null, finalRequested: false,
-          };
-          if (block.finalRequested) continue;
-          block.sourceText = text;
-          block.finalRequested = true;
-          block.finalSource = text;
-          clearFallbackPauseTimer();
-          fallbackContextRef.current = contextTail(text);
-          emit({ type: "source.partial", text, sequence: block.sequence, startedAt: block.startedAt });
-          queueFallbackFinal(block);
-          fallbackBlockRef.current = null;
-          fallbackStartedAtRef.current = Date.now();
+          const knownStable = fallbackInterimRef.current.stableText;
+          const knownWords = knownStable ? knownStable.split(" ").filter(Boolean).length : 0;
+          const finalWords = text.split(" ").filter(Boolean).length;
+          const finalText = knownWords && knownWords === finalWords ? text : textAfterStablePrefix(text, knownStable);
+          update = fallbackAccumulatorRef.current?.ingest({ id: `${fallbackRecognitionRunRef.current}:${index}`, text: finalText, isFinal: true }) ?? update;
+          fallbackInterimRef.current = { previousText: "", stableText: "" };
         } else {
           interim = `${interim} ${text}`.trim();
         }
       }
       if (interim) {
-        if (!fallbackStartedAtRef.current) fallbackStartedAtRef.current = Date.now();
-        const block = fallbackBlockRef.current || {
-          sequence: fallbackSequenceRef.current++, startedAt: fallbackStartedAtRef.current, sourceText: "",
-          translatedText: "", previousWords: [], stableWords: [], context: fallbackContextRef.current, requestedSourcePrefix: "", translatedSourcePrefix: "", pendingSentenceText: "", previewWorkerQueued: false, previewTask: null, requestIndex: 0, finalSource: null, finalRequested: false,
-        };
-        const interimWords = splitWords(interim);
-        block.stableWords = stableWords(block.previousWords, interimWords, block.stableWords);
-        block.previousWords = interimWords;
-        block.sourceText = interim;
-        fallbackBlockRef.current = block;
-        emit({ type: "source.partial", text: interim, sequence: block.sequence, startedAt: block.startedAt });
-        queueTentativePreview(block);
-        scheduleFallbackPause(block);
+        const previous = fallbackInterimRef.current;
+        const common = commonStablePrefix(previous.previousText, interim);
+        const stableWords = previous.stableText.split(" ").filter(Boolean);
+        const commonWords = common.split(" ").filter(Boolean);
+        const extendsStable = stableWords.every((word, index) => commonWords[index]?.toLowerCase().replace(/^\W+|\W+$/g, "") === word.toLowerCase().replace(/^\W+|\W+$/g, ""));
+        const stableText = extendsStable ? common : previous.stableText;
+        const stableIncrement = extendsStable ? commonWords.slice(stableWords.length).join(" ") : "";
+        fallbackInterimRef.current = { previousText: interim, stableText };
+        update = fallbackAccumulatorRef.current?.ingest({ id: `${fallbackRecognitionRunRef.current}:interim`, stableText: stableIncrement, tentativeText: textAfterStablePrefix(interim, stableText), isFinal: false }) ?? update;
         setState("SPEAKING");
       }
+      if (update) publishFallbackUpdate(update);
+      if (interim || update?.stableText) scheduleFallbackPause();
     };
     recognition.onerror = (event) => {
       if (event.error === "aborted" || event.error === "no-speech") return;
@@ -429,8 +367,11 @@ export function useRealtimeLecture(options: Options) {
     };
     recognition.onend = () => {
       if (!fallbackActiveRef.current || pausedRef.current || intentionalCloseRef.current) return;
-      flushFallbackBlock();
+      // Browser engines commonly end and restart recognition between short
+      // utterances. Keep the stable source alive through the grace window.
+      scheduleFallbackPause(DEFAULT_BOUNDARY_CONFIG.resumeMergeMs);
       fallbackFinalIndexesRef.current = new Set();
+      fallbackRecognitionRunRef.current += 1;
       fallbackRestartRef.current = window.setTimeout(() => {
         try { recognition.start(); } catch { /* already restarting */ }
       }, 250);
@@ -439,7 +380,7 @@ export function useRealtimeLecture(options: Options) {
     recognition.start();
     emit({ type: "state", state: "LISTENING", provider: "qwen", message: "Browser transcription compatibility mode" });
     return true;
-  }, [cleanupSocket, clearFallbackBlock, clearFallbackPauseTimer, emit, flushFallbackBlock, queueFallbackFinal, queueTentativePreview, scheduleFallbackPause]);
+  }, [cleanupSocket, clearFallbackPauseTimer, emit, publishFallbackUpdate, scheduleFallbackPause, translateFallbackCommit]);
 
   const startMicrophone = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser cannot access a microphone.");
@@ -546,13 +487,15 @@ export function useRealtimeLecture(options: Options) {
     contextRef.current?.resume().catch(() => undefined);
     if (fallbackActiveRef.current) {
       fallbackEpochRef.current += 1;
-      clearFallbackBlock();
+      fallbackAccumulatorRef.current = new SentenceAccumulator();
+      fallbackStartedAtRef.current = Date.now();
       fallbackFinalIndexesRef.current = new Set();
+      fallbackInterimRef.current = { previousText: "", stableText: "" };
       try { speechRef.current?.start(); } catch { /* already active */ }
     }
     socketRef.current?.send(JSON.stringify({ type: "session.resume" }));
     setState("LISTENING");
-  }, [clearFallbackBlock, clearFallbackPauseTimer]);
+  }, [clearFallbackPauseTimer]);
 
   const changeProvider = useCallback((provider: ProviderPreference) => {
     socketRef.current?.send(JSON.stringify({ type: "provider.change", provider }));
@@ -614,14 +557,15 @@ export function useRealtimeLecture(options: Options) {
     fallbackContextRef.current = "";
     fallbackEpochRef.current += 1;
     clearFallbackPauseTimer();
-    clearFallbackBlock();
+    clearFallbackAccumulator();
+    fallbackInterimRef.current = { previousText: "", stableText: "" };
     if (fallbackRestartRef.current !== null) window.clearTimeout(fallbackRestartRef.current);
     speechRef.current?.abort();
     cleanupSocket();
     if (recorderRef.current?.state !== "inactive") recorderRef.current?.stop();
     streamRef.current?.getTracks().forEach((track) => track.stop());
     contextRef.current?.close().catch(() => undefined);
-  }, [cleanupSocket, clearFallbackBlock, clearFallbackPauseTimer]);
+  }, [cleanupSocket, clearFallbackAccumulator, clearFallbackPauseTimer]);
 
   return { state, level, message, metrics, debug, start, pause, resume, end, changeProvider };
 }

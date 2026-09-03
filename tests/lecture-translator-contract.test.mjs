@@ -6,7 +6,7 @@ const root = new URL("../", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
 
 test("lecture translator uses continuous PCM streaming through Qwen's realtime protocol", async () => {
-  const [page, hook, relay, worklet, route, viteConfig, worker] = await Promise.all([
+  const [page, hook, relay, worklet, route, viteConfig, worker, stabilizer, itemPairer] = await Promise.all([
     read("app/lecture-translator/page.tsx"),
     read("app/lecture-translator/use-realtime-lecture.ts"),
     read("server/realtime-proxy.ts"),
@@ -14,6 +14,8 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
     read("app/api/translate/route.ts"),
     read("vite.config.ts"),
     read("worker/realtime.ts"),
+    read("app/lecture-translator/caption-stabilizer.mjs"),
+    read("app/lecture-translator/qwen-item-pairing.mjs"),
   ]);
 
   assert.doesNotMatch(page, /webkitSpeechRecognition|SpeechRecognition/);
@@ -30,17 +32,22 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(hook, /shouldProcessBrowserResult/);
   assert.match(hook, /shouldStartBrowserFallbackImmediately\(window\.location\.hostname\)/);
   assert.match(hook, /fetch\("\/api\/translate"/);
-  assert.match(hook, /fallbackFinalCorrectionSegmentId/);
   assert.match(hook, /quality: "accurate"/);
-  assert.match(hook, /fallbackRequestSegmentId\(sessionId, block\.sequence, block\.requestIndex\+\+\), context/);
-  assert.match(hook, /tentativeTranslationPlan\(\{/);
-  assert.match(hook, /NATURAL_PAUSE_MS/);
-  assert.match(hook, /window\.setTimeout\([\s\S]{0,400}NATURAL_PAUSE_MS/);
+  assert.match(hook, /fallbackRequestSegmentId\(sessionId, commit\.sequence, 0\), commit\.context/);
+  assert.match(hook, /SentenceAccumulator/);
+  assert.match(hook, /createSentenceTranslationQueue/);
+  assert.match(hook, /fallbackAccumulatorRef\.current\?\.ingest/);
+  assert.match(hook, /fallbackAccumulatorRef\.current\?\.advance/);
+  assert.match(hook, /DEFAULT_BOUNDARY_CONFIG\.boundaryGraceMs/);
+  assert.match(hook, /DEFAULT_BOUNDARY_CONFIG\.resumeMergeMs/);
+  assert.match(hook, /commonStablePrefix/);
+  assert.match(hook, /textAfterStablePrefix/);
   assert.match(hook, /clearFallbackPauseTimer\(\)/);
-  assert.match(hook, /await block\.previewTask/);
-  assert.match(hook, /block\.translatedSourcePrefix !== sourceText/);
-  assert.equal((hook.match(/fallbackFinalCorrectionSegmentId\(sessionId, block\.sequence\)/g) || []).length, 1);
-  assert.doesNotMatch(hook, /queueFallbackInterim|"fast"/);
+  assert.match(hook, /fallbackTranslationQueueRef\.current\?\.enqueue/);
+  assert.doesNotMatch(hook, /queueFallbackInterim|tentativeTranslationPlan|"fast"/);
+  assert.match(stabilizer, /normalizeCaptionSnapshot/);
+  assert.match(stabilizer, /findSentenceBoundaries/);
+  assert.match(stabilizer, /createSentenceTranslationQueue/);
   assert.ok((hook.match(/fallbackContextRef\.current = ""/g) || []).length >= 2);
   assert.match(hook, /url\.searchParams\.set\("provider", "qwen"\)/);
   assert.match(hook, /hostname}:3002/);
@@ -58,6 +65,11 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(relay, /input_audio_buffer\.append/);
   assert.match(relay, /response\.text\.text/);
   assert.match(relay, /response\.text\.done/);
+  assert.match(relay, /conversation\.item\.created/);
+  assert.match(relay, /itemPairer\.captureCreated\(payload\)/);
+  assert.match(worker, /conversation\.item\.created/);
+  assert.match(worker, /itemPairer\.captureCreated\(payload\)/);
+  assert.match(itemPairer, /previous_item_id/);
   assert.match(relay, /session\.updated/);
   assert.match(relay, /session\.finished/);
   assert.match(relay, /corpus: \{ phrases: this\.terminology \}/);

@@ -3,6 +3,7 @@ import type { Socket } from "node:net";
 import { createServer, type Server as HttpServer } from "node:http";
 import WebSocket, { WebSocketServer, type RawData } from "ws";
 import type { Plugin } from "vite";
+import { createQwenItemPairer } from "../app/lecture-translator/qwen-item-pairing.mjs";
 
 type ProxyConfig = {
   apiKey?: string;
@@ -12,6 +13,7 @@ type ProxyConfig = {
 };
 
 type ClientControl = { type?: unknown; vad?: unknown; terminology?: unknown };
+type LiveItem = { itemId: string; responseId?: string; sourceText: string; translatedText: string; startedAt: number };
 
 const MAX_AUDIO_QUEUE = 300;
 const FINISH_TIMEOUT_MS = 15_000;
@@ -37,6 +39,15 @@ function errorMessage(value: unknown, fallback: string) {
   return fallback;
 }
 
+function normalizedUpstreamText(...values: unknown[]) {
+  return values.filter((value): value is string => typeof value === "string").join("").replace(/\s+/g, " ").trim();
+}
+
+function upstreamId(payload: Record<string, unknown>, ...keys: string[]) {
+  for (const key of keys) if (typeof payload[key] === "string" && payload[key]) return payload[key] as string;
+  return "";
+}
+
 class QwenRelay {
   private upstream: WebSocket | null = null;
   private upstreamReady = false;
@@ -49,9 +60,11 @@ class QwenRelay {
   private target = "zh";
   private queue: Buffer[] = [];
   private sequence = 0;
-  private sourceText = "";
-  private translatedText = "";
   private segmentStartedAt = 0;
+  private activeItemId = "";
+  private items = new Map<string, LiveItem>();
+  private responseItems = new Map<string, string>();
+  private itemPairer = createQwenItemPairer();
   private finishTimer: ReturnType<typeof setTimeout> | null = null;
   private audioReceived = 0;
   private audioSent = 0;
@@ -178,20 +191,28 @@ class QwenRelay {
       send(this.client, { type: "state", state: "LISTENING", provider: "qwen" });
     } else if (type === "input_audio_buffer.speech_started") {
       this.segmentStartedAt = Date.now();
+      this.activeItemId = `speech:${crypto.randomUUID()}`;
+      this.item(this.activeItemId);
       send(this.client, { type: "state", state: "SPEAKING", provider: "qwen" });
     } else if (type === "input_audio_buffer.speech_stopped") {
       send(this.client, { type: "state", state: "PROCESSING", provider: "qwen" });
+    } else if (type === "conversation.item.created") {
+      this.itemPairer.captureCreated(payload);
     } else if (type === "conversation.item.input_audio_transcription.text") {
-      this.sourceText = `${typeof payload.text === "string" ? payload.text : ""}${typeof payload.stash === "string" ? payload.stash : ""}`;
-      this.partial("source.partial", this.sourceText);
+      const item = this.sourceItem(payload);
+      item.sourceText = normalizedUpstreamText(payload.text, payload.stash);
+      this.partial("source.partial", item.sourceText, item);
     } else if (type === "conversation.item.input_audio_transcription.completed") {
-      this.sourceText = typeof payload.transcript === "string" ? payload.transcript : this.sourceText;
+      const item = this.sourceItem(payload);
+      item.sourceText = normalizedUpstreamText(payload.transcript) || item.sourceText;
     } else if (type === "response.text.text") {
-      this.translatedText = `${typeof payload.text === "string" ? payload.text : ""}${typeof payload.stash === "string" ? payload.stash : ""}`;
-      this.partial("translation.partial", this.translatedText);
+      const item = this.translationItem(payload);
+      item.translatedText = normalizedUpstreamText(payload.text, payload.stash);
+      this.partial("translation.partial", item.translatedText, item);
     } else if (type === "response.text.done") {
-      this.translatedText = typeof payload.text === "string" ? payload.text : this.translatedText;
-      this.finalize();
+      const item = this.translationItem(payload);
+      item.translatedText = normalizedUpstreamText(payload.text) || item.translatedText;
+      this.finalize(item.itemId);
     } else if (type === "session.finished") {
       this.finalize();
       this.complete();
@@ -200,16 +221,51 @@ class QwenRelay {
     }
   }
 
-  private partial(type: "source.partial" | "translation.partial", text: string) {
-    if (text) send(this.client, { type, text, sequence: this.sequence, startedAt: this.segmentStartedAt || Date.now() });
+  private item(itemId: string) {
+    let item = this.items.get(itemId);
+    if (!item) {
+      item = { itemId, sourceText: "", translatedText: "", startedAt: this.segmentStartedAt || Date.now() };
+      this.items.set(itemId, item);
+    }
+    return item;
   }
 
-  private finalize() {
-    if (!this.sourceText.trim() && !this.translatedText.trim()) return;
+  private sourceItem(payload: Record<string, unknown>) {
+    const itemId = upstreamId(payload, "item_id", "itemId", "conversation_item_id") || this.activeItemId || `speech:${crypto.randomUUID()}`;
+    this.activeItemId = itemId;
+    return this.item(itemId);
+  }
+
+  private translationItem(payload: Record<string, unknown>) {
+    const responseId = upstreamId(payload, "response_id", "responseId");
+    const itemId = this.itemPairer.resolve(payload) || (responseId && this.responseItems.get(responseId)) || this.activeItemId || upstreamId(payload, "item_id", "itemId", "conversation_item_id") || `speech:${crypto.randomUUID()}`;
+    const item = this.item(itemId);
+    if (responseId) {
+      item.responseId = responseId;
+      this.responseItems.set(responseId, itemId);
+      this.itemPairer.rememberResponse(payload, itemId);
+    }
+    return item;
+  }
+
+  private partial(type: "source.partial" | "translation.partial", text: string, item: LiveItem) {
+    if (text) send(this.client, { type, text, sequence: this.sequence, startedAt: item.startedAt, itemId: item.itemId, ...(item.responseId ? { responseId: item.responseId } : {}) });
+  }
+
+  private finalize(itemId?: string) {
+    const ids = itemId ? [itemId] : [...this.items.keys()];
+    for (const id of ids) this.finalizeItem(id);
+  }
+
+  private finalizeItem(itemId: string) {
+    const item = this.items.get(itemId);
+    if (!item || (!item.sourceText && !item.translatedText)) return;
     const endedAt = Date.now();
-    send(this.client, { type: "segment.final", sequence: this.sequence++, sourceText: this.sourceText.trim(), translatedText: this.translatedText.trim(), startedAt: this.segmentStartedAt || endedAt, endedAt, provider: "qwen" });
-    this.sourceText = "";
-    this.translatedText = "";
+    send(this.client, { type: "segment.final", sequence: this.sequence++, sourceText: item.sourceText, translatedText: item.translatedText, startedAt: item.startedAt || endedAt, endedAt, provider: "qwen", itemId: item.itemId, ...(item.responseId ? { responseId: item.responseId } : {}) });
+    this.items.delete(itemId);
+    if (item.responseId) this.responseItems.delete(item.responseId);
+    this.itemPairer.forgetSource(itemId);
+    if (this.activeItemId === itemId) this.activeItemId = "";
     this.segmentStartedAt = 0;
     this.sendMetrics();
   }
