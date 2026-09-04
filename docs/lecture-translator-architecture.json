@@ -1,0 +1,29 @@
+{
+  "format": "lecture-translator-architecture/v1",
+  "title": "Lecture Translator Architecture Map",
+  "type": "object",
+  "required": ["nodes", "flows"],
+  "properties": {
+    "nodes": { "type": "array", "items": { "type": "object", "required": ["id", "name", "layer", "description", "sources"] } },
+    "flows": { "type": "array", "items": { "type": "object", "required": ["id", "name", "steps"] } }
+  },
+  "nodes": [
+    { "id": "workspace", "name": "Lecture workspace", "layer": "Browser UI", "description": "Client route coordinates authenticated lecture sessions, transcript segments, notes, provider status, and API calls.", "sources": ["app/lecture-translator/page.tsx"] },
+    { "id": "capture", "name": "PCM capture worklet", "layer": "Browser audio", "description": "AudioWorklet resamples microphone input to 16 kHz, emits PCM chunks, and reports RMS level.", "sources": ["public/audio/pcm-capture-worklet.js", "app/lecture-translator/use-realtime-lecture.ts"] },
+    { "id": "realtime", "name": "Realtime lecture hook", "layer": "Browser realtime", "description": "Opens the lecture WebSocket, sends session controls and PCM chunks, handles server events, reconnects, and can use browser speech fallback.", "sources": ["app/lecture-translator/use-realtime-lecture.ts"] },
+    { "id": "worker", "name": "Cloudflare Worker", "layer": "Edge runtime", "description": "Worker routes /api/lecture-realtime upgrades and otherwise delegates application requests to the Vinext app router.", "sources": ["worker/index.ts", "vite.config.ts", ".openai/hosting.json"] },
+    { "id": "translate", "name": "Translation refinement", "layer": "API route", "description": "Authenticated /api/translate validates incremental requests, calls Qwen-MT, retries Chinese-quality failures, and records translation usage.", "sources": ["app/api/translate/route.ts", "app/auth.ts"] },
+    { "id": "summary", "name": "Structured notes", "layer": "API route", "description": "Authenticated /api/summarize converts completed segments into normalized, transcript-grounded bilingual revision notes through Qwen.", "sources": ["app/api/summarize/route.ts", "app/auth.ts"] },
+    { "id": "assist", "name": "Lecture assist", "layer": "API route", "description": "Authenticated /api/lecture-assist explains, simplifies, exemplifies, or defines a selected excerpt through Qwen.", "sources": ["app/api/lecture-assist/route.ts", "app/auth.ts"] },
+    { "id": "auth", "name": "Authentication & quota", "layer": "Server data", "description": "Session cookies are HttpOnly, Secure, and SameSite=Lax. Auth checks active users and records or limits API usage through the application database.", "sources": ["app/auth.ts", ".openai/hosting.json"] },
+    { "id": "indexeddb", "name": "IndexedDB workspace", "layer": "Browser storage", "description": "The browser persists the current workspace and optional lecture audio blobs in the lecture-workspace database.", "sources": ["app/lecture-translator/storage.ts", "app/lecture-translator/page.tsx"] },
+    { "id": "qwen", "name": "Qwen services", "layer": "Configured upstream", "description": "Qwen-MT handles refinement; Qwen chat-completions handles summaries and lecture assistance. Keys are read only in server routes from the Cloudflare environment.", "sources": ["app/api/translate/route.ts", "app/api/summarize/route.ts", "app/api/lecture-assist/route.ts"] }
+  ],
+  "flows": [
+    { "id": "live", "name": "Live audio → transcript", "steps": ["workspace", "capture", "realtime", "worker", "workspace", "indexeddb"] },
+    { "id": "refine", "name": "Finalize → Qwen-MT refinement", "steps": ["workspace", "translate", "auth", "qwen", "workspace", "indexeddb"] },
+    { "id": "notes", "name": "Transcript → structured notes", "steps": ["workspace", "summary", "auth", "qwen", "workspace", "indexeddb"] },
+    { "id": "assist-flow", "name": "Selected excerpt → assist answer", "steps": ["workspace", "assist", "auth", "qwen", "workspace"] },
+    { "id": "restore", "name": "Open → restore local workspace", "steps": ["indexeddb", "workspace"] }
+  ]
+}
