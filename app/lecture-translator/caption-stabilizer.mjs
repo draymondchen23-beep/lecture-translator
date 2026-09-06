@@ -218,6 +218,11 @@ export class SentenceAccumulator {
     while (this.stableText) {
       const hard = findSentenceBoundaries(this.stableText)[0];
       if (hard) {
+        // Realtime ASR may briefly attach punctuation to a still-changing
+        // hypothesis ("The cell." -> "The cell membrane …"). A final ASR
+        // unit is safe; an interim hard mark needs the same short stability
+        // grace as any other candidate boundary.
+        if (!final && now - this.lastStableAt < this.config.boundaryGraceMs) break;
         const commit = this.commitThrough(hard.kind, hard.end, now);
         if (commit) commits.push(commit);
         continue;
@@ -281,9 +286,24 @@ export class SentenceAccumulator {
     return this.snapshot(this.takeImmediateBoundaries(now, true));
   }
 
+  /** Replaces only the uncommitted browser hypothesis after an ASR revision. */
+  replaceUncommitted(stableText = "", tentativeText = "", now = Date.now()) {
+    this.stableText = text(stableText);
+    this.tentativeText = text(tentativeText);
+    this.lastStableAt = now;
+    this.sentenceStartedAt = this.stableText || this.tentativeText ? now : 0;
+    return this.snapshot();
+  }
+
   /** @param {number} [now] @param {{ force?: boolean }} [options] */
   advance(now = Date.now(), options = {}) {
     const commits = this.takeImmediateBoundaries(now);
+    // Stop/pause is an explicit capture boundary: retain the visible interim
+    // tail instead of silently dropping the speaker's last words.
+    if (options.force && this.tentativeText) {
+      this.stableText = mergeText(this.stableText, this.tentativeText);
+      this.tentativeText = "";
+    }
     if (!this.stableText) return this.snapshot(commits);
     if (options.force) {
       const commit = this.commitThrough("forced", this.stableText.length, now);

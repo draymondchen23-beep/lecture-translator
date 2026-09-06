@@ -13,7 +13,7 @@ type ProxyConfig = {
 };
 
 type ClientControl = { type?: unknown; vad?: unknown; terminology?: unknown };
-type LiveItem = { itemId: string; responseId?: string; sourceText: string; translatedText: string; startedAt: number };
+type LiveItem = { itemId: string; responseId?: string; sequence: number; sourceText: string; translatedText: string; startedAt: number; sourceFinal: boolean; translationFinal: boolean };
 
 const MAX_AUDIO_QUEUE = 300;
 const FINISH_TIMEOUT_MS = 15_000;
@@ -64,6 +64,8 @@ class QwenRelay {
   private activeItemId = "";
   private items = new Map<string, LiveItem>();
   private responseItems = new Map<string, string>();
+  private unmappedTargets = new Map<string, Array<{ payload: Record<string, unknown>; done: boolean }>>();
+  private closedItems = new Set<string>();
   private itemPairer = createQwenItemPairer();
   private finishTimer: ReturnType<typeof setTimeout> | null = null;
   private audioReceived = 0;
@@ -191,28 +193,42 @@ class QwenRelay {
       send(this.client, { type: "state", state: "LISTENING", provider: "qwen" });
     } else if (type === "input_audio_buffer.speech_started") {
       this.segmentStartedAt = Date.now();
-      this.activeItemId = `speech:${crypto.randomUUID()}`;
-      this.item(this.activeItemId);
+      this.activeItemId = "";
       send(this.client, { type: "state", state: "SPEAKING", provider: "qwen" });
     } else if (type === "input_audio_buffer.speech_stopped") {
       send(this.client, { type: "state", state: "PROCESSING", provider: "qwen" });
     } else if (type === "conversation.item.created") {
-      this.itemPairer.captureCreated(payload);
+      const mapping = this.itemPairer.captureCreated(payload);
+      if (mapping.itemId && mapping.sourceItemId) this.flushUnmappedTargets(mapping.itemId, mapping.sourceItemId);
     } else if (type === "conversation.item.input_audio_transcription.text") {
       const item = this.sourceItem(payload);
+      if (!item) return;
       item.sourceText = normalizedUpstreamText(payload.text, payload.stash);
       this.partial("source.partial", item.sourceText, item);
     } else if (type === "conversation.item.input_audio_transcription.completed") {
       const item = this.sourceItem(payload);
+      if (!item) return;
       item.sourceText = normalizedUpstreamText(payload.transcript) || item.sourceText;
+      item.sourceFinal = true;
+      this.finalPart("source.final", item.sourceText, item);
+      this.finishItemIfReady(item);
     } else if (type === "response.text.text") {
       const item = this.translationItem(payload);
+      if (!item) return;
       item.translatedText = normalizedUpstreamText(payload.text, payload.stash);
       this.partial("translation.partial", item.translatedText, item);
     } else if (type === "response.text.done") {
       const item = this.translationItem(payload);
+      if (!item) {
+        const key = upstreamId(payload, "item_id", "itemId", "conversation_item_id");
+        const pending = key ? this.unmappedTargets.get(key) : undefined;
+        if (pending?.length) pending[pending.length - 1].done = true;
+        return;
+      }
       item.translatedText = normalizedUpstreamText(payload.text) || item.translatedText;
-      this.finalize(item.itemId);
+      item.translationFinal = true;
+      this.finalPart("translation.final", item.translatedText, item);
+      this.finishItemIfReady(item);
     } else if (type === "session.finished") {
       this.finalize();
       this.complete();
@@ -222,9 +238,10 @@ class QwenRelay {
   }
 
   private item(itemId: string) {
+    if (this.closedItems.has(itemId)) return null;
     let item = this.items.get(itemId);
     if (!item) {
-      item = { itemId, sourceText: "", translatedText: "", startedAt: this.segmentStartedAt || Date.now() };
+      item = { itemId, sequence: this.sequence++, sourceText: "", translatedText: "", startedAt: this.segmentStartedAt || Date.now(), sourceFinal: false, translationFinal: false };
       this.items.set(itemId, item);
     }
     return item;
@@ -238,8 +255,17 @@ class QwenRelay {
 
   private translationItem(payload: Record<string, unknown>) {
     const responseId = upstreamId(payload, "response_id", "responseId");
-    const itemId = this.itemPairer.resolve(payload) || (responseId && this.responseItems.get(responseId)) || this.activeItemId || upstreamId(payload, "item_id", "itemId", "conversation_item_id") || `speech:${crypto.randomUUID()}`;
+    const explicitItemId = upstreamId(payload, "item_id", "itemId", "conversation_item_id");
+    const resolved = this.itemPairer.resolve(payload) || (responseId && this.responseItems.get(responseId));
+    if (!resolved && explicitItemId) {
+      const pending = this.unmappedTargets.get(explicitItemId) || [];
+      if (pending.length < 32) pending.push({ payload, done: false });
+      this.unmappedTargets.set(explicitItemId, pending);
+      return null;
+    }
+    const itemId = resolved || this.activeItemId || `response:${responseId || crypto.randomUUID()}`;
     const item = this.item(itemId);
+    if (!item) return null;
     if (responseId) {
       item.responseId = responseId;
       this.responseItems.set(responseId, itemId);
@@ -248,8 +274,30 @@ class QwenRelay {
     return item;
   }
 
+  private flushUnmappedTargets(targetId: string, sourceId: string) {
+    const pending = this.unmappedTargets.get(targetId) || [];
+    this.unmappedTargets.delete(targetId);
+    for (const entry of pending) {
+      const item = this.item(sourceId);
+      if (!item) continue;
+      const responseId = upstreamId(entry.payload, "response_id", "responseId");
+      if (responseId) { item.responseId = responseId; this.responseItems.set(responseId, sourceId); }
+      item.translatedText = normalizedUpstreamText(entry.payload.text, entry.payload.stash) || item.translatedText;
+      if (entry.done) { item.translationFinal = true; this.finalPart("translation.final", item.translatedText, item); this.finishItemIfReady(item); }
+      else this.partial("translation.partial", item.translatedText, item);
+    }
+  }
+
   private partial(type: "source.partial" | "translation.partial", text: string, item: LiveItem) {
-    if (text) send(this.client, { type, text, sequence: this.sequence, startedAt: item.startedAt, itemId: item.itemId, ...(item.responseId ? { responseId: item.responseId } : {}) });
+    if (text) send(this.client, { type, text, sequence: item.sequence, startedAt: item.startedAt, itemId: item.itemId, ...(item.responseId ? { responseId: item.responseId } : {}) });
+  }
+
+  private finalPart(type: "source.final" | "translation.final", text: string, item: LiveItem) {
+    send(this.client, { type, text, sequence: item.sequence, startedAt: item.startedAt, endedAt: Date.now(), itemId: item.itemId, ...(item.responseId ? { responseId: item.responseId } : {}) });
+  }
+
+  private finishItemIfReady(item: LiveItem) {
+    if (item.sourceFinal && item.translationFinal) this.finalizeItem(item.itemId);
   }
 
   private finalize(itemId?: string) {
@@ -261,8 +309,10 @@ class QwenRelay {
     const item = this.items.get(itemId);
     if (!item || (!item.sourceText && !item.translatedText)) return;
     const endedAt = Date.now();
-    send(this.client, { type: "segment.final", sequence: this.sequence++, sourceText: item.sourceText, translatedText: item.translatedText, startedAt: item.startedAt || endedAt, endedAt, provider: "qwen", itemId: item.itemId, ...(item.responseId ? { responseId: item.responseId } : {}) });
+    send(this.client, { type: "segment.final", sequence: item.sequence, sourceText: item.sourceText, translatedText: item.translatedText, startedAt: item.startedAt || endedAt, endedAt, provider: "qwen", itemId: item.itemId, ...(item.responseId ? { responseId: item.responseId } : {}) });
     this.items.delete(itemId);
+    this.closedItems.add(itemId);
+    if (this.closedItems.size > 512) this.closedItems.delete(this.closedItems.values().next().value as string);
     if (item.responseId) this.responseItems.delete(item.responseId);
     this.itemPairer.forgetSource(itemId);
     if (this.activeItemId === itemId) this.activeItemId = "";

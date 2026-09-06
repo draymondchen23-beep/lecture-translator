@@ -48,6 +48,19 @@ test("duplicate segment uses memory cache and never repeats external refinement"
   assert.equal(refiner.usage().cacheHits, 1);
 });
 
+test("cache identity includes model and terminology, while unknown usage stays unknown", async () => {
+  const refiner = createIncrementalRefiner();
+  let calls = 0;
+  const external = async () => ({ translation: `译文${++calls}`, provider: "qwen-mt", model: "m" });
+  const base = { text: "same", quality: "fast", provider: "qwen-mt", sourceLanguage: "English", targetLanguage: "Chinese", terminologyKey: "[]", tokenEstimate: 1, warning: false };
+  await refiner.run({ ...base, model: "m1" }, external);
+  await refiner.run({ ...base, model: "m2" }, external);
+  await refiner.run({ ...base, model: "m2", terminologyKey: "[[\"term\",\"术语\"]]" }, external);
+  assert.equal(calls, 3);
+  assert.equal(refiner.usage().unknownUsageResponses, 3);
+  assert.equal("estimatedCostUsd" in refiner.usage(), false);
+});
+
 test("contract rejects transcript payloads and unsafe segment limits", () => {
   assert.equal(validateIncrementalRequest({ lectureId: "l", sessionId: "l", segmentId: "s", text: "x", transcript: "old history" }).status, 400);
   assert.equal(validateIncrementalRequest({ lectureId: "l", sessionId: "l", segmentId: "s", text: "x", context: "x".repeat(401) }).status, 400);
@@ -57,5 +70,6 @@ test("contract rejects transcript payloads and unsafe segment limits", () => {
   assert.equal(validateIncrementalRequest({ lectureId: "l", sessionId: "l", segmentId: "s", text: "ok", quality: "accurate" }).value.quality, "accurate");
   assert.equal(validateIncrementalRequest({ lectureId: "l", sessionId: "l", segmentId: "s", text: "abcd", context: "efgh" }).value.tokenEstimate, 2);
   assert.equal(validateIncrementalRequest({ lectureId: "l", sessionId: "l", segmentId: "s", text: "ok", quality: "slow" }).status, 400);
+  assert.equal(validateIncrementalRequest({ lectureId: "l", sessionId: "l", segmentId: "s", text: "ok", terminology: Object.fromEntries(Array.from({ length: 100 }, (_, index) => [`term-${index}`.repeat(20), "译".repeat(160)])) }).status, 413);
   assert.ok("value" in validateIncrementalRequest({ lectureId: "lecture", sessionId: "session", segmentId: "s", text: "ok" }));
 });

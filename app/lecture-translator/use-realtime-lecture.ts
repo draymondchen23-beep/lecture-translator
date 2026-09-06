@@ -1,11 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { bestTranscript, contextTail, fallbackRequestSegmentId, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately } from "./browser-incremental.mjs";
-import { commonStablePrefix, createSentenceTranslationQueue, DEFAULT_BOUNDARY_CONFIG, SentenceAccumulator, textAfterStablePrefix } from "./caption-stabilizer.mjs";
+import { bestTranscript, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, withoutCommittedPrefix } from "./browser-incremental.mjs";
+import { commonStablePrefix, DEFAULT_BOUNDARY_CONFIG, SentenceAccumulator, textAfterStablePrefix } from "./caption-stabilizer.mjs";
+import { createBoundedTranslationQueue, RealtimeCaptionNormalizer } from "./realtime-caption-state.mjs";
 import type { LectureState, ProviderPreference, RealtimeServerEvent } from "./types";
 
 type Options = {
+  sessionId: string;
+  sequenceBase: number;
   provider: ProviderPreference;
   sourceLanguage: string;
   targetLanguage: string;
@@ -39,12 +42,15 @@ type FallbackCommit = {
   sequence: number;
   startedAt: number;
   sourceText: string;
-  context: string;
+  segmentId: string;
+  sourceRevision: number;
+  requestId: string;
   epoch: number;
 };
 type FallbackCaptionUpdate = { stableText: string; displayText: string; commits: Array<{ sourceText: string }> };
-type FallbackTranslationQueue = { enqueue(commit: FallbackCommit): Promise<void>; idle(): Promise<void> };
+type FallbackTranslationQueue = { enqueue(commit: FallbackCommit & { final?: boolean }): boolean; idle(): Promise<void> };
 type FallbackInterim = { previousText: string; stableText: string };
+type FallbackRow = { segmentId: string; sequence: number; startedAt: number; sourceText: string; sourceRevision: number; sourceStatus: "draft" | "final"; translationText: string; translationRevision: number; translationSourceText: string; translationSourceRevision: number; requestedSourceRevision: number; translationStatus: "idle" | "pending" | "draft" | "final" | "error" };
 
 const SAMPLE_RATE = 16_000;
 const CHUNK_SAMPLES = 1_600;
@@ -79,12 +85,17 @@ export function useRealtimeLecture(options: Options) {
   const fallbackSequenceRef = useRef(0);
   const fallbackStartedAtRef = useRef(0);
   const fallbackSessionRef = useRef("");
-  const fallbackContextRef = useRef("");
+  const fallbackRunRef = useRef("");
+  const realtimeSessionRef = useRef("");
+  const normalizerRef = useRef<RealtimeCaptionNormalizer | null>(null);
+  const fallbackRowsRef = useRef(new Map<number, FallbackRow>());
+  const fallbackCommittedTextRef = useRef("");
   const fallbackFinalIndexesRef = useRef(new Set<number>());
   const fallbackTranslationQueueRef = useRef<FallbackTranslationQueue | null>(null);
-  const fallbackWorkRef = useRef(new Set<Promise<void>>());
   const fallbackRestartRef = useRef<number | null>(null);
   const fallbackPauseTimerRef = useRef<number | null>(null);
+  const fallbackDraftTimerRef = useRef<number | null>(null);
+  const fallbackDraftFirstAtRef = useRef(0);
   const fallbackEpochRef = useRef(0);
   const fallbackRecognitionRunRef = useRef(0);
   const fallbackAccumulatorRef = useRef<SentenceAccumulator | null>(null);
@@ -161,7 +172,7 @@ export function useRealtimeLecture(options: Options) {
           const event = JSON.parse(messageEvent.data) as RealtimeServerEvent;
           trace("socket.event", { type: event.type });
           if (DEBUG) setDebug((current) => ({ ...current, lastServerEvent: event.type }));
-          emit(event);
+          emit(normalizerRef.current?.ingest(event) as RealtimeServerEvent ?? event);
         } catch {
           emit({ type: "error", message: "The realtime service returned an unreadable event.", recoverable: true });
         }
@@ -210,24 +221,25 @@ export function useRealtimeLecture(options: Options) {
     fallbackPauseTimerRef.current = null;
   }, []);
 
+  const clearFallbackDraftTimer = useCallback(() => {
+    if (fallbackDraftTimerRef.current !== null) window.clearTimeout(fallbackDraftTimerRef.current);
+    fallbackDraftTimerRef.current = null;
+    fallbackDraftFirstAtRef.current = 0;
+  }, []);
+
   const clearFallbackAccumulator = useCallback(() => {
     fallbackAccumulatorRef.current = null;
   }, []);
 
-  const trackFallbackWork = useCallback((task: Promise<void>) => {
-    fallbackWorkRef.current.add(task);
-    void task.finally(() => fallbackWorkRef.current.delete(task));
-  }, []);
-
   const waitForFallbackWork = useCallback(async () => {
-    while (fallbackWorkRef.current.size) await Promise.all([...fallbackWorkRef.current]);
+    await fallbackTranslationQueueRef.current?.idle();
   }, []);
 
-  const translateFallback = useCallback(async (sessionId: string, text: string, segmentId: string, context: string) => {
+  const translateFallback = useCallback(async (sessionId: string, text: string, segmentId: string) => {
     const response = await fetch("/api/translate", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ lectureId: sessionId, sessionId, segmentId, text, context, quality: "accurate", terminology: optionsRef.current.terminology }),
+      body: JSON.stringify({ lectureId: sessionId, sessionId, segmentId, text, quality: "accurate", terminology: optionsRef.current.terminology }),
     });
     const result = await response.json().catch(() => ({})) as { translation?: unknown; error?: unknown };
     if (!response.ok || typeof result.translation !== "string" || !result.translation.trim()) {
@@ -243,35 +255,87 @@ export function useRealtimeLecture(options: Options) {
     let translatedText = "";
     try {
       setState("PROCESSING");
-      // The queued unit is exactly one committed source sentence. Context is
-      // only continuity context; it is never resubmitted for translation.
-      translatedText = await translateFallback(sessionId, commit.sourceText, fallbackRequestSegmentId(sessionId, commit.sequence, 0), commit.context);
+      translatedText = await translateFallback(sessionId, commit.sourceText, commit.segmentId);
     } catch (error) {
       if (epoch !== fallbackEpochRef.current) return;
       emit({ type: "error", message: error instanceof Error ? error.message : "Translation failed.", recoverable: true });
     }
-    if (epoch !== fallbackEpochRef.current) return;
-    emit({ type: "segment.final", sequence: commit.sequence, sourceText: commit.sourceText, translatedText, startedAt: commit.startedAt, endedAt: Date.now(), provider: "qwen", refined: true });
+    const row = fallbackRowsRef.current.get(commit.sequence);
+    if (epoch !== fallbackEpochRef.current || !row || row.segmentId !== commit.segmentId) return;
+    const extendsRequest = row.sourceText === commit.sourceText || row.sourceText.startsWith(`${commit.sourceText} `);
+    if (!extendsRequest || row.translationSourceRevision > commit.sourceRevision) return;
+    if (translatedText) {
+      if (row.translationText !== translatedText) row.translationRevision += 1;
+      row.translationText = translatedText;
+      row.translationSourceText = commit.sourceText;
+      row.translationSourceRevision = commit.sourceRevision;
+      row.translationStatus = row.sourceStatus === "final" && row.sourceText === commit.sourceText ? "final" : "draft";
+    } else row.translationStatus = "error";
+    emit({ type: "segment.upsert", sessionId, segmentId: row.segmentId, sequence: row.sequence, startTime: row.startedAt, endTime: Date.now(), sourceText: row.sourceText, sourceRevision: row.sourceRevision, sourceStatus: row.sourceStatus, translationText: row.translationText, translationRevision: row.translationRevision, translationStatus: row.translationStatus, provider: "qwen", requestId: commit.requestId });
     if (fallbackActiveRef.current && !pausedRef.current) setState("LISTENING");
   }, [emit, translateFallback]);
 
   const queueFallbackCommit = useCallback((commit: FallbackCommit) => {
-    const task = fallbackTranslationQueueRef.current?.enqueue(commit);
-    if (!task) return;
-    trackFallbackWork(task);
-  }, [trackFallbackWork]);
+    if (fallbackTranslationQueueRef.current?.enqueue({ ...commit, final: true }) !== false) return;
+    const row = fallbackRowsRef.current.get(commit.sequence);
+    if (!row || row.sourceRevision !== commit.sourceRevision) return;
+    row.translationStatus = "error";
+    emit({ type: "segment.upsert", sessionId: fallbackSessionRef.current, segmentId: row.segmentId, sequence: row.sequence, startTime: row.startedAt, endTime: Date.now(), sourceText: row.sourceText, sourceRevision: row.sourceRevision, sourceStatus: row.sourceStatus, translationText: row.translationText, translationRevision: row.translationRevision, translationStatus: "error", provider: "qwen", requestId: commit.requestId });
+    emit({ type: "error", message: "Translation queue is full; this subtitle could not be translated.", recoverable: true });
+  }, [emit]);
+
+  const scheduleFallbackDraft = useCallback(() => {
+    const now = Date.now();
+    if (!fallbackDraftFirstAtRef.current) fallbackDraftFirstAtRef.current = now;
+    if (fallbackDraftTimerRef.current !== null) window.clearTimeout(fallbackDraftTimerRef.current);
+    const delay = now - fallbackDraftFirstAtRef.current >= 1_000 ? 0 : 400;
+    fallbackDraftTimerRef.current = window.setTimeout(() => {
+      fallbackDraftTimerRef.current = null;
+      fallbackDraftFirstAtRef.current = 0;
+      const sequence = fallbackSequenceRef.current;
+      const row = fallbackRowsRef.current.get(sequence);
+      if (!row || row.sourceStatus !== "draft" || !row.sourceText || row.requestedSourceRevision === row.sourceRevision) return;
+      row.requestedSourceRevision = row.sourceRevision;
+      if (fallbackTranslationQueueRef.current?.enqueue({ sequence, startedAt: row.startedAt, sourceText: row.sourceText, segmentId: row.segmentId, sourceRevision: row.sourceRevision, requestId: `${row.segmentId}:${row.sourceRevision}`, epoch: fallbackEpochRef.current, final: false }) === false) row.requestedSourceRevision = 0;
+    }, delay);
+  }, [queueFallbackCommit]);
+
+  const publishFallbackRow = useCallback((sequence: number, sourceText: string, sourceStatus: "draft" | "final", startedAt: number) => {
+    const sessionId = fallbackSessionRef.current;
+    let row = fallbackRowsRef.current.get(sequence);
+    if (!row) {
+      row = { segmentId: `${fallbackRunRef.current}:${sequence}`, sequence, startedAt, sourceText: "", sourceRevision: 0, sourceStatus, translationText: "", translationRevision: 0, translationSourceText: "", translationSourceRevision: 0, requestedSourceRevision: 0, translationStatus: "pending" };
+      fallbackRowsRef.current.set(sequence, row);
+    }
+    const sourceChanged = Boolean(sourceText && sourceText !== row.sourceText);
+    if (sourceChanged) { row.sourceText = sourceText; row.sourceRevision += 1; }
+    row.sourceStatus = sourceStatus;
+    if (sourceChanged || !row.translationText) row.translationStatus = "pending";
+    emit({ type: "segment.upsert", sessionId, segmentId: row.segmentId, sequence, startTime: row.startedAt, endTime: sourceStatus === "final" ? Date.now() : 0, sourceText: row.sourceText, sourceRevision: row.sourceRevision, sourceStatus: row.sourceStatus, translationText: row.translationText, translationRevision: row.translationRevision, translationStatus: row.translationStatus, provider: "qwen" });
+    return { row, sourceChanged };
+  }, [emit]);
 
   const publishFallbackUpdate = useCallback((update: FallbackCaptionUpdate) => {
     for (const completed of update.commits) {
       const sequence = fallbackSequenceRef.current++;
       const startedAt = fallbackStartedAtRef.current || Date.now();
-      const context = fallbackContextRef.current;
-      fallbackContextRef.current = contextTail(`${fallbackContextRef.current} ${completed.sourceText}`, 400);
-      queueFallbackCommit({ sequence, startedAt, sourceText: completed.sourceText, context, epoch: fallbackEpochRef.current });
+      const { row, sourceChanged } = publishFallbackRow(sequence, completed.sourceText, "final", startedAt);
+      fallbackCommittedTextRef.current = completed.sourceText;
+      // A draft for the identical source becomes final in place; otherwise a
+      // single final request supersedes queued draft work for this row.
+      if (row.translationText && !sourceChanged && row.translationSourceText === row.sourceText) {
+        row.translationStatus = "final";
+        emit({ type: "segment.upsert", sessionId: fallbackSessionRef.current, segmentId: row.segmentId, sequence, startTime: row.startedAt, endTime: Date.now(), sourceText: row.sourceText, sourceRevision: row.sourceRevision, sourceStatus: "final", translationText: row.translationText, translationRevision: row.translationRevision, translationStatus: "final", provider: "qwen" });
+      } else queueFallbackCommit({ sequence, startedAt, sourceText: completed.sourceText, segmentId: row.segmentId, sourceRevision: row.sourceRevision, requestId: `${row.segmentId}:${row.sourceRevision}`, epoch: fallbackEpochRef.current });
       fallbackStartedAtRef.current = Date.now();
     }
-    emit({ type: "source.partial", text: update.displayText, sequence: fallbackSequenceRef.current, startedAt: fallbackStartedAtRef.current || Date.now() });
-  }, [emit, queueFallbackCommit]);
+    if (update.displayText) {
+      publishFallbackRow(fallbackSequenceRef.current, update.displayText, "draft", fallbackStartedAtRef.current || Date.now());
+      // Stable source is shown immediately; this bounded, max-wait scheduler
+      // turns it into a replaceable Chinese draft without per-token requests.
+      if (update.stableText) scheduleFallbackDraft();
+    }
+  }, [emit, publishFallbackRow, queueFallbackCommit, scheduleFallbackDraft]);
 
   const scheduleFallbackPause = useCallback((delay: number = DEFAULT_BOUNDARY_CONFIG.boundaryGraceMs) => {
     clearFallbackPauseTimer();
@@ -307,16 +371,18 @@ export function useRealtimeLecture(options: Options) {
     fallbackActiveRef.current = true;
     cleanupSocket();
     queuedRef.current = [];
-    fallbackSequenceRef.current = 0;
+    fallbackSequenceRef.current = optionsRef.current.sequenceBase;
     fallbackStartedAtRef.current = Date.now();
-    fallbackSessionRef.current = crypto.randomUUID();
-    fallbackContextRef.current = "";
+    fallbackSessionRef.current = realtimeSessionRef.current || crypto.randomUUID();
+    fallbackRunRef.current = `${fallbackSessionRef.current}:${crypto.randomUUID()}`;
     fallbackFinalIndexesRef.current = new Set();
-    fallbackTranslationQueueRef.current = createSentenceTranslationQueue(translateFallbackCommit);
-    fallbackWorkRef.current.clear();
+    fallbackRowsRef.current = new Map();
+    fallbackCommittedTextRef.current = "";
+    fallbackTranslationQueueRef.current = createBoundedTranslationQueue(translateFallbackCommit, { concurrency: 2, maxPending: 24 });
     fallbackEpochRef.current += 1;
     fallbackRecognitionRunRef.current = 0;
     clearFallbackPauseTimer();
+    clearFallbackDraftTimer();
     fallbackAccumulatorRef.current = new SentenceAccumulator();
     fallbackInterimRef.current = { previousText: "", stableText: "" };
 
@@ -336,12 +402,12 @@ export function useRealtimeLecture(options: Options) {
         if (result.isFinal) {
           if (fallbackFinalIndexesRef.current.has(index)) continue;
           fallbackFinalIndexesRef.current.add(index);
-          const knownStable = fallbackInterimRef.current.stableText;
-          const knownWords = knownStable ? knownStable.split(" ").filter(Boolean).length : 0;
-          const finalWords = text.split(" ").filter(Boolean).length;
-          const finalText = knownWords && knownWords === finalWords ? text : textAfterStablePrefix(text, knownStable);
+          const finalText = withoutCommittedPrefix(text, fallbackCommittedTextRef.current);
           update = fallbackAccumulatorRef.current?.ingest({ id: `${fallbackRecognitionRunRef.current}:${index}`, text: finalText, isFinal: true }) ?? update;
           fallbackInterimRef.current = { previousText: "", stableText: "" };
+          // A browser callback can contain several final units. Publish each
+          // accumulator result before the next one replaces `update`.
+          if (update) { publishFallbackUpdate(update); update = undefined; }
         } else {
           interim = `${interim} ${text}`.trim();
         }
@@ -354,8 +420,14 @@ export function useRealtimeLecture(options: Options) {
         const extendsStable = stableWords.every((word, index) => commonWords[index]?.toLowerCase().replace(/^\W+|\W+$/g, "") === word.toLowerCase().replace(/^\W+|\W+$/g, ""));
         const stableText = extendsStable ? common : previous.stableText;
         const stableIncrement = extendsStable ? commonWords.slice(stableWords.length).join(" ") : "";
-        fallbackInterimRef.current = { previousText: interim, stableText };
-        update = fallbackAccumulatorRef.current?.ingest({ id: `${fallbackRecognitionRunRef.current}:interim`, stableText: stableIncrement, tentativeText: textAfterStablePrefix(interim, stableText), isFinal: false }) ?? update;
+        if (!extendsStable) {
+          const revised = withoutCommittedPrefix(interim, fallbackCommittedTextRef.current);
+          fallbackInterimRef.current = { previousText: interim, stableText: "" };
+          update = fallbackAccumulatorRef.current?.replaceUncommitted("", revised) ?? update;
+        } else {
+          fallbackInterimRef.current = { previousText: interim, stableText };
+          update = fallbackAccumulatorRef.current?.ingest({ id: `${fallbackRecognitionRunRef.current}:interim`, stableText: stableIncrement, tentativeText: textAfterStablePrefix(interim, stableText), isFinal: false }) ?? update;
+        }
         setState("SPEAKING");
       }
       if (update) publishFallbackUpdate(update);
@@ -380,7 +452,7 @@ export function useRealtimeLecture(options: Options) {
     recognition.start();
     emit({ type: "state", state: "LISTENING", provider: "qwen", message: "Browser transcription compatibility mode" });
     return true;
-  }, [cleanupSocket, clearFallbackPauseTimer, emit, publishFallbackUpdate, scheduleFallbackPause, translateFallbackCommit]);
+  }, [cleanupSocket, clearFallbackDraftTimer, clearFallbackPauseTimer, emit, publishFallbackUpdate, scheduleFallbackPause, translateFallbackCommit]);
 
   const startMicrophone = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser cannot access a microphone.");
@@ -439,6 +511,8 @@ export function useRealtimeLecture(options: Options) {
     if (streamRef.current || fallbackActiveRef.current) return;
     intentionalCloseRef.current = false;
     pausedRef.current = false;
+    realtimeSessionRef.current = optionsRef.current.sessionId;
+    normalizerRef.current = new RealtimeCaptionNormalizer(realtimeSessionRef.current, `${realtimeSessionRef.current}:${crypto.randomUUID()}`, optionsRef.current.sequenceBase);
     queuedRef.current = [];
     setMessage("");
     setState("CONNECTING");
@@ -471,6 +545,7 @@ export function useRealtimeLecture(options: Options) {
   const pause = useCallback(async () => {
     pausedRef.current = true;
     clearFallbackPauseTimer();
+    clearFallbackDraftTimer();
     contextRef.current?.suspend().catch(() => undefined);
     if (fallbackActiveRef.current) speechRef.current?.stop();
     socketRef.current?.send(JSON.stringify({ type: "session.pause" }));
@@ -479,11 +554,12 @@ export function useRealtimeLecture(options: Options) {
     await Promise.race([waitForFallbackWork(), new Promise<void>((resolve) => window.setTimeout(resolve, 20_000))]);
     fallbackEpochRef.current += 1;
     setState("PAUSED");
-  }, [clearFallbackPauseTimer, flushFallbackBlock, waitForFallbackWork]);
+  }, [clearFallbackDraftTimer, clearFallbackPauseTimer, flushFallbackBlock, waitForFallbackWork]);
 
   const resume = useCallback(() => {
     pausedRef.current = false;
     clearFallbackPauseTimer();
+    clearFallbackDraftTimer();
     contextRef.current?.resume().catch(() => undefined);
     if (fallbackActiveRef.current) {
       fallbackEpochRef.current += 1;
@@ -495,7 +571,7 @@ export function useRealtimeLecture(options: Options) {
     }
     socketRef.current?.send(JSON.stringify({ type: "session.resume" }));
     setState("LISTENING");
-  }, [clearFallbackPauseTimer]);
+  }, [clearFallbackDraftTimer, clearFallbackPauseTimer]);
 
   const changeProvider = useCallback((provider: ProviderPreference) => {
     socketRef.current?.send(JSON.stringify({ type: "provider.change", provider }));
@@ -508,6 +584,7 @@ export function useRealtimeLecture(options: Options) {
     await flushPcmRef.current?.();
     pausedRef.current = true;
     clearFallbackPauseTimer();
+    clearFallbackDraftTimer();
     await contextRef.current?.suspend().catch(() => undefined);
     flushFallbackBlock();
     if (fallbackRestartRef.current !== null) window.clearTimeout(fallbackRestartRef.current);
@@ -516,7 +593,6 @@ export function useRealtimeLecture(options: Options) {
     speechRef.current = null;
     await Promise.race([waitForFallbackWork(), new Promise<void>((resolve) => window.setTimeout(resolve, 20_000))]);
     fallbackActiveRef.current = false;
-    fallbackContextRef.current = "";
     fallbackEpochRef.current += 1;
     if (socket?.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify({ type: "session.end" }));
@@ -549,14 +625,14 @@ export function useRealtimeLecture(options: Options) {
     setLevel(0);
     if (DEBUG) setDebug((current) => ({ ...current, micActive: false, rms: 0 }));
     setState("ENDED");
-  }, [cleanupSocket, clearFallbackPauseTimer, flushFallbackBlock, waitForFallbackWork]);
+  }, [cleanupSocket, clearFallbackDraftTimer, clearFallbackPauseTimer, flushFallbackBlock, waitForFallbackWork]);
 
   useEffect(() => () => {
     intentionalCloseRef.current = true;
     fallbackActiveRef.current = false;
-    fallbackContextRef.current = "";
     fallbackEpochRef.current += 1;
     clearFallbackPauseTimer();
+    clearFallbackDraftTimer();
     clearFallbackAccumulator();
     fallbackInterimRef.current = { previousText: "", stableText: "" };
     if (fallbackRestartRef.current !== null) window.clearTimeout(fallbackRestartRef.current);
@@ -565,7 +641,7 @@ export function useRealtimeLecture(options: Options) {
     if (recorderRef.current?.state !== "inactive") recorderRef.current?.stop();
     streamRef.current?.getTracks().forEach((track) => track.stop());
     contextRef.current?.close().catch(() => undefined);
-  }, [cleanupSocket, clearFallbackAccumulator, clearFallbackPauseTimer]);
+  }, [cleanupSocket, clearFallbackAccumulator, clearFallbackDraftTimer, clearFallbackPauseTimer]);
 
   return { state, level, message, metrics, debug, start, pause, resume, end, changeProvider };
 }

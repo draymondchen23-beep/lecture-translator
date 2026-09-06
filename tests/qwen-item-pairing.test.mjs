@@ -22,13 +22,11 @@ test("a distinct Qwen translation item finalizes the preceding source item", () 
   assert.deepEqual([...segments.entries()], [["source-item", { sourceText: "The source sentence.", translatedText: "源句。" }]]);
 });
 
-test("a response arriving before item-created uses the active source and remains paired", () => {
+test("item-created returns the source mapping needed to flush an early target buffer", () => {
   const pairer = createQwenItemPairer();
   const activeSourceId = "source-item";
-  const earlyTranslation = { item_id: "translation-item", response_id: "response-1" };
-  const sourceId = pairer.resolve(earlyTranslation) || activeSourceId;
-  pairer.rememberResponse(earlyTranslation, sourceId);
-  pairer.captureCreated({ item: { id: "translation-item" }, previous_item_id: activeSourceId });
-  assert.equal(pairer.resolve({ response_id: "response-1" }), activeSourceId);
+  assert.equal(pairer.resolve({ item_id: "translation-item", response_id: "response-1" }), "");
+  const mapping = pairer.captureCreated({ item: { id: "translation-item" }, previous_item_id: activeSourceId });
+  assert.deepEqual(mapping, { itemId: "translation-item", sourceItemId: activeSourceId });
   assert.equal(pairer.resolve({ item_id: "translation-item" }), activeSourceId);
 });

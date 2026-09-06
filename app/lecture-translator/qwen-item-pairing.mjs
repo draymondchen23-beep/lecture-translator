@@ -29,7 +29,9 @@ export function createQwenItemPairer() {
       const item = record(event.item);
       const itemId = id(item, "id", "item_id", "itemId");
       const previousItemId = id(event, "previous_item_id", "previousItemId") || id(item, "previous_item_id", "previousItemId");
-      if (itemId && previousItemId) itemSources.set(itemId, itemSources.get(previousItemId) || previousItemId);
+      const sourceItemId = previousItemId && (itemSources.get(previousItemId) || previousItemId);
+      if (itemId && sourceItemId) itemSources.set(itemId, sourceItemId);
+      return { itemId, sourceItemId: sourceItemId || "" };
     },
     resolve,
     rememberResponse(payload, sourceItemId) {

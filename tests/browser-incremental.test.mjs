@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendAccurateTranslation, bestTranscript, completedSentencePrefix, contextTail, fallbackFinalCorrectionSegmentId, hasTokenPrefix, NATURAL_PAUSE_MS, shouldCommitAfterPause, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, tentativeTranslationPlan } from "../app/lecture-translator/browser-incremental.mjs";
+import { appendAccurateTranslation, bestTranscript, completedSentencePrefix, contextTail, fallbackFinalCorrectionSegmentId, hasTokenPrefix, NATURAL_PAUSE_MS, shouldCommitAfterPause, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, tentativeTranslationPlan, withoutCommittedPrefix } from "../app/lecture-translator/browser-incremental.mjs";
 
 test("final correction request ids are unique per block", () => {
   assert.notEqual(fallbackFinalCorrectionSegmentId("session", 1), fallbackFinalCorrectionSegmentId("session", 2));
@@ -32,6 +32,13 @@ test("context is limited to the preceding finalized block tail", () => {
 
 test("best browser alternative uses confidence", () => {
   assert.equal(bestTranscript({ length: 2, 0: { transcript: "first", confidence: 0.2 }, 1: { transcript: "best", confidence: 0.9 } }), "best");
+});
+
+test("full browser final snapshots exclude only the committed word prefix", () => {
+  const source = "The membrane controls ions.";
+  assert.equal(withoutCommittedPrefix(source, source), "");
+  assert.equal(withoutCommittedPrefix(`${source} It stores energy.`, source), "It stores energy.");
+  assert.equal(withoutCommittedPrefix("very very important", "very"), "very important");
 });
 
 test("paused recognition ignores late final results and Sites starts the fallback immediately", () => {

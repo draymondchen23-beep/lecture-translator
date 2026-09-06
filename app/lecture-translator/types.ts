@@ -26,6 +26,10 @@ export type TranscriptSegment = {
   speaker: string;
   confidence: number | null;
   isFinal: true;
+  sourceRevision?: number;
+  sourceStatus?: "draft" | "final";
+  translationRevision?: number;
+  translationStatus?: "idle" | "pending" | "draft" | "final" | "error";
   createdAt: string;
   bookmarked: boolean;
   refinementState: "idle" | "refining" | "refined" | "error";
@@ -97,8 +101,28 @@ export type Workspace = {
 
 export type RealtimeServerEvent =
   | { type: "state"; state: LectureState; provider?: ActiveProvider; message?: string }
+  | {
+    type: "segment.upsert";
+    sessionId: string;
+    segmentId: string;
+    sequence: number;
+    startTime: number;
+    endTime: number;
+    sourceText: string;
+    sourceRevision: number;
+    sourceStatus: "draft" | "final";
+    translationText: string;
+    translationRevision: number;
+    translationStatus: "idle" | "pending" | "draft" | "final" | "error";
+    provider: ActiveProvider;
+    requestId?: string;
+    itemId?: string;
+    responseId?: string;
+  }
   | { type: "source.partial"; text: string; sequence: number; startedAt: number; itemId?: string }
+  | { type: "source.final"; text: string; sequence: number; startedAt: number; endedAt: number; itemId?: string }
   | { type: "translation.partial"; text: string; sequence: number; startedAt: number; itemId?: string; responseId?: string }
+  | { type: "translation.final"; text: string; sequence: number; startedAt: number; endedAt: number; itemId?: string; responseId?: string }
   | { type: "segment.final"; sequence: number; sourceText: string; translatedText: string; startedAt: number; endedAt: number; provider: ActiveProvider; confidence?: number; refined?: boolean; itemId?: string; responseId?: string }
   | { type: "provider.switched"; from: ActiveProvider; to: ActiveProvider; reason: string }
   | { type: "metrics"; audioChunks: number; audioSent: number; audioQueued: number; partialEvents: number; finalEvents: number; latency: number }

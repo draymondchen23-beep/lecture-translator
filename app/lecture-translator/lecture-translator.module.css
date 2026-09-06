@@ -249,44 +249,26 @@
 .tabs button[aria-selected="true"]::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1.5px; border-radius: 2px; background: var(--text); }
 .tabs b { margin-left: 5px; min-width: 17px; height: 17px; padding: 0 5px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); display: inline-grid; place-items: center; font-size: 10px; font-weight: 600; }
 
-.content { overflow: auto; overscroll-behavior: contain; scroll-behavior: smooth; padding-bottom: 150px; scrollbar-width: thin; }
+.content { overflow: auto; overscroll-behavior: contain; padding-bottom: 150px; scrollbar-width: thin; }
+.transcriptOnlyContent { overflow: hidden; }
 .transcript, .notes, .terms { width: min(calc(100% - 88px), 900px); margin: 0 auto; }
 .transcript { padding-top: 18px; }
 .transcriptStream {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   max-height: calc(100dvh - 170px);
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scroll-behavior: smooth;
+  overflow-anchor: none;
   border: 1px solid var(--border);
   border-radius: 20px;
   background: color-mix(in srgb, var(--surface) 52%, transparent);
   backdrop-filter: blur(18px) saturate(125%);
   -webkit-backdrop-filter: blur(18px) saturate(125%);
 }
-
-.transcriptColumn {
-  min-height: 0;
-  max-height: calc(100dvh - 170px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
-  padding-bottom: 0;
-}
-.columnRunway { flex: none; height: clamp(140px, 42vh, 320px); }
-.transcriptColumn::after { content: ""; display: block; height: clamp(140px, 42vh, 320px); }
-.transcriptColumn + .transcriptColumn { border-left: 1px solid var(--border); }
-.columnTitle { position: sticky; top: 0; z-index: 3; padding: 12px 16px 8px; border-bottom: 1px solid var(--border); background: var(--surface); color: var(--text-3); font-size: 10px; font-weight: 620; letter-spacing: .07em; text-transform: uppercase; }
-.transcriptColumn .segment { grid-template-columns: minmax(0, 1fr); gap: 0; padding: 0 16px; border: 0; }
-.transcriptColumn:nth-child(2) .segment { grid-template-columns: minmax(0, 1fr); }
-.transcriptColumn .segment:last-of-type { border-bottom: 0; }
-.transcriptColumn .segmentBody { padding: 0; }
-.transcriptColumn .sourceText, .transcriptColumn .translationText { margin: 0; }
-.transcriptColumn .providerTag { display: none; }
-.transcriptColumn .searchMatch { background: transparent; }
-.transcriptColumn .liveSegment { min-height: 0; padding: 0 16px; border-top: 0; background: transparent; }
-.transcriptColumn:first-child .liveSegment { padding-left: 16px; }
-.transcriptColumn .liveLabel { display: none; }
-.transcriptColumn .liveColumn { max-height: none; overflow: visible; padding-bottom: 0; }
+.transcriptRunway { height: var(--runway-top, 35vh); flex: none; }
+.transcriptRunway:last-child { height: var(--runway-bottom, 35vh); }
+.columnTitle { position: sticky; top: 0; z-index: 3; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; padding: 12px 20px 8px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: blur(14px); color: var(--text-3); font-size: 10px; font-weight: 620; letter-spacing: .07em; text-transform: uppercase; }
+.columnTitle span + span { padding-left: 24px; border-left: 1px solid var(--border); }
 
 :global(html[data-lecture-theme="dark"]) .transcriptStream {
   background: transparent;
@@ -311,12 +293,22 @@
   content-visibility: auto;
   contain-intrinsic-size: 124px;
 }
+.pairedSegment { display: block; padding: 18px 20px 20px; border-bottom: 1px solid var(--border); }
+.pairedSegment.liveSegment { background: var(--accent-soft); border-radius: 14px; margin: 0 8px; }
+.pairedSegment .segmentBody { min-width: 0; }
+.pairedSegment .segmentActions { position: absolute; right: 14px; top: 14px; }
+.pairedSegment .bilingualColumns > div + div { padding-left: 24px; border-left: 1px solid var(--border); }
+.pairedSegment { content-visibility: visible; contain-intrinsic-size: auto; }
+.pairedSegment .bilingualColumns .translationText { margin-top: 0; }
+.translationDraft { opacity: .78; }
+@media (prefers-reduced-motion: reduce) {
+  .transcriptStream { scroll-behavior: auto; }
+}
 .segment::before { content: none; }
 .searchMatch { background: rgba(194, 164, 90, .10); }
 .segmentBody { min-width: 0; }
 .bilingualColumns, .liveBilingual { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
 .bilingualColumns > div + div, .liveBilingual > div + div { padding-left: 24px; border-left: 1px solid var(--border); }
-.liveColumn { min-height: 0; max-height: min(42vh, 360px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; padding-bottom: 64px; scroll-padding-block: 38% 64px; }
 .languageLabel { display: block; margin-bottom: 7px; color: var(--text-3); font-size: 9.5px; font-weight: 620; letter-spacing: .07em; text-transform: uppercase; }
 .sourceText { margin: 0; font-size: 17px; line-height: 1.65; letter-spacing: -.012em; overflow-wrap: anywhere; }
 .translationText { margin: 8px 0 0; color: var(--text-2); font-size: 15.5px; line-height: 1.72; overflow-wrap: anywhere; }
@@ -337,8 +329,6 @@
 .segmentActions button:hover { background: var(--surface); color: var(--text); box-shadow: 0 1px 5px rgba(20, 22, 20, .06); }
 .segmentActions svg { width: 15px; height: 15px; }
 .segmentActions .actionActive { color: var(--accent); background: var(--accent-soft); }
-.transcriptColumn .segmentActions { position: absolute; top: 50%; right: 8px; width: auto; transform: translate(4px, -50%); pointer-events: none; }
-.transcriptColumn .segment:hover .segmentActions, .transcriptColumn .segment:focus-within .segmentActions { transform: translate(0, -50%); pointer-events: auto; }
 
 .liveSegment {
   position: relative;
@@ -395,6 +385,8 @@
 }
 .controlDock::before { content: ""; position: absolute; inset: 0; pointer-events: none; background: radial-gradient(180px circle at var(--glass-x) var(--glass-y), rgba(255, 255, 255, .27), transparent 58%); opacity: .9; }
 .controlDock > * { position: relative; }
+.replayControls { display: inline-flex; align-items: center; gap: 6px; margin-right: 4px; color: var(--text-3); font-size: 10px; }
+.replayControls button { padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font-size: 10px; }
 .primaryControl { height: 44px; padding: 0 15px 0 10px; border: 1px solid color-mix(in srgb, var(--text) 72%, transparent); border-radius: 13px; background: radial-gradient(140px 80px at 50% -30%, rgba(255, 255, 255, .20), transparent 65%), linear-gradient(135deg, var(--text), color-mix(in srgb, var(--text) 72%, var(--accent))); color: var(--bg); display: flex; align-items: center; gap: 9px; font-size: 12.5px; font-weight: 560; box-shadow: inset 0 1px rgba(255, 255, 255, .16), inset 0 -1px rgba(0, 0, 0, .18), 0 6px 18px rgba(20, 22, 20, .16); transition: transform .18s ease, opacity .18s ease, box-shadow .18s ease; }
 .app .primaryControl { color: var(--bg); }
 .primaryControl:hover { transform: translateY(-1px) scale(1.01); box-shadow: inset 0 1px rgba(255, 255, 255, .20), 0 10px 24px rgba(20, 22, 20, .20); }
@@ -624,8 +616,6 @@
   .sourceText { font-size: 16px; }
   .translationText { font-size: 14.5px; }
   .segmentActions { margin: 10px 0 0 -6px; }
-  .transcriptColumn .segmentActions { grid-column: auto; margin: 0; }
-  .transcriptColumn:first-child .liveSegment { padding-left: 16px; }
   .transcriptStream { border-radius: 16px; }
   .liveSegment { padding: 18px 18px 18px 62px; }
   .liveLabel { left: 18px; top: 22px; }

@@ -24,6 +24,15 @@ export function hasTokenPrefix(sourceText = "", prefix = "") {
   return source.startsWith(requested) && typeof next === "string" && /[\s.,!?;:'"()[\]{}—–-]/u.test(next);
 }
 
+// Browser finals are full utterance snapshots. Remove only an exact committed
+// word prefix, preserving real repetitions rather than using fuzzy overlap.
+export function withoutCommittedPrefix(snapshot = "", committed = "") {
+  const source = snapshot.trim();
+  const prefix = committed.trim();
+  if (!source || !prefix || !hasTokenPrefix(source, prefix)) return source;
+  return source.slice(prefix.length).trim();
+}
+
 export const NATURAL_PAUSE_MS = 800;
 export const STABLE_WORDS_PER_PREVIEW = 12;
 

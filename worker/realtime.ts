@@ -11,7 +11,7 @@ export interface RealtimeEnvironment {
   QWEN_REALTIME_REGION?: string;
 }
 
-type LiveItem = { itemId: string; responseId?: string; sourceText: string; translatedText: string; startedAt: number };
+type LiveItem = { itemId: string; responseId?: string; sequence: number; sourceText: string; translatedText: string; startedAt: number; sourceFinal: boolean; translationFinal: boolean };
 
 const MAX_AUDIO_QUEUE = 300;
 
@@ -58,9 +58,12 @@ export async function handleRealtimeUpgrade(request: Request, env: RealtimeEnvir
   const Pair = (globalThis as unknown as { WebSocketPair?: new () => { 0: RealtimeSocket; 1: RealtimeSocket } }).WebSocketPair;
   if (!Pair) return new Response("WebSocket runtime is unavailable", { status: 501 });
   const pair = new Pair();
-  const client = pair[0];
+  // `server` is the accepted endpoint and is the only endpoint used for
+  // reads/writes in the Worker; `responseSocket` is returned to the browser.
+  const responseSocket = pair[0];
   const server = pair[1];
   server.accept?.();
+  const client = server;
   console.info("[CLIENT] Browser connected");
 
   const source = new URL(request.url).searchParams.get("source") || "en";
@@ -76,6 +79,8 @@ export async function handleRealtimeUpgrade(request: Request, env: RealtimeEnvir
   let activeItemId = "";
   const items = new Map<string, LiveItem>();
   const responseItems = new Map<string, string>();
+  const unmappedTargets = new Map<string, Array<{ payload: Record<string, unknown>; done: boolean }>>();
+  const closedItems = new Set<string>();
   const itemPairer = createQwenItemPairer();
   let audioReceived = 0;
   let audioSent = 0;
@@ -90,9 +95,10 @@ export async function handleRealtimeUpgrade(request: Request, env: RealtimeEnvir
   };
   const flush = () => { queued.splice(0).forEach(sendAudio); };
   const item = (itemId: string) => {
+    if (closedItems.has(itemId)) return null;
     let value = items.get(itemId);
     if (!value) {
-      value = { itemId, sourceText: "", translatedText: "", startedAt: segmentStartedAt || Date.now() };
+      value = { itemId, sequence: sequence++, sourceText: "", translatedText: "", startedAt: segmentStartedAt || Date.now(), sourceFinal: false, translationFinal: false };
       items.set(itemId, value);
     }
     return value;
@@ -104,8 +110,17 @@ export async function handleRealtimeUpgrade(request: Request, env: RealtimeEnvir
   };
   const translationItem = (payload: Record<string, unknown>) => {
     const responseId = upstreamId(payload, "response_id", "responseId");
-    const itemId = itemPairer.resolve(payload) || (responseId && responseItems.get(responseId)) || activeItemId || upstreamId(payload, "item_id", "itemId", "conversation_item_id") || `speech:${crypto.randomUUID()}`;
+    const explicitItemId = upstreamId(payload, "item_id", "itemId", "conversation_item_id");
+    const resolved = itemPairer.resolve(payload) || (responseId && responseItems.get(responseId));
+    if (!resolved && explicitItemId) {
+      const pending = unmappedTargets.get(explicitItemId) || [];
+      if (pending.length < 32) pending.push({ payload, done: false });
+      unmappedTargets.set(explicitItemId, pending);
+      return null;
+    }
+    const itemId = resolved || activeItemId || `response:${responseId || crypto.randomUUID()}`;
     const value = item(itemId);
+    if (!value) return null;
     if (responseId) {
       value.responseId = responseId;
       responseItems.set(responseId, itemId);
@@ -113,17 +128,36 @@ export async function handleRealtimeUpgrade(request: Request, env: RealtimeEnvir
     }
     return value;
   };
-  const partial = (type: "source.partial" | "translation.partial", text: string, value: LiveItem) => {
-    if (text) jsonMessage(client, { type, text, sequence, startedAt: value.startedAt, itemId: value.itemId, ...(value.responseId ? { responseId: value.responseId } : {}) });
+  const flushUnmappedTargets = (targetId: string, sourceId: string) => {
+    const pending = unmappedTargets.get(targetId) || [];
+    unmappedTargets.delete(targetId);
+    for (const entry of pending) {
+      const value = item(sourceId);
+      if (!value) continue;
+      const responseId = upstreamId(entry.payload, "response_id", "responseId");
+      if (responseId) { value.responseId = responseId; responseItems.set(responseId, sourceId); }
+      value.translatedText = normalizedUpstreamText(entry.payload.text, entry.payload.stash) || value.translatedText;
+      if (entry.done) { value.translationFinal = true; finalPart("translation.final", value.translatedText, value); finishItemIfReady(value); }
+      else partial("translation.partial", value.translatedText, value);
+    }
   };
+  const partial = (type: "source.partial" | "translation.partial", text: string, value: LiveItem) => {
+    if (text) jsonMessage(client, { type, text, sequence: value.sequence, startedAt: value.startedAt, itemId: value.itemId, ...(value.responseId ? { responseId: value.responseId } : {}) });
+  };
+  const finalPart = (type: "source.final" | "translation.final", text: string, value: LiveItem) => {
+    jsonMessage(client, { type, text, sequence: value.sequence, startedAt: value.startedAt, endedAt: Date.now(), itemId: value.itemId, ...(value.responseId ? { responseId: value.responseId } : {}) });
+  };
+  const finishItemIfReady = (value: LiveItem) => { if (value.sourceFinal && value.translationFinal) finalize(value.itemId); };
   const finalize = (itemId?: string) => {
     const ids = itemId ? [itemId] : [...items.keys()];
     for (const id of ids) {
       const value = items.get(id);
       if (!value || (!value.sourceText && !value.translatedText)) continue;
       const endedAt = Date.now();
-      jsonMessage(client, { type: "segment.final", sequence: sequence++, sourceText: value.sourceText, translatedText: value.translatedText, startedAt: value.startedAt || endedAt, endedAt, provider: "qwen", itemId: value.itemId, ...(value.responseId ? { responseId: value.responseId } : {}) });
+      jsonMessage(client, { type: "segment.final", sequence: value.sequence, sourceText: value.sourceText, translatedText: value.translatedText, startedAt: value.startedAt || endedAt, endedAt, provider: "qwen", itemId: value.itemId, ...(value.responseId ? { responseId: value.responseId } : {}) });
       items.delete(id);
+      closedItems.add(id);
+      if (closedItems.size > 512) closedItems.delete(closedItems.values().next().value as string);
       if (value.responseId) responseItems.delete(value.responseId);
       itemPairer.forgetSource(id);
       if (activeItemId === id) activeItemId = "";
@@ -163,28 +197,42 @@ export async function handleRealtimeUpgrade(request: Request, env: RealtimeEnvir
         jsonMessage(client, { type: "state", state: "LISTENING", provider: "qwen" });
       } else if (type === "input_audio_buffer.speech_started") {
         segmentStartedAt = Date.now();
-        activeItemId = `speech:${crypto.randomUUID()}`;
-        item(activeItemId);
+        activeItemId = "";
         jsonMessage(client, { type: "state", state: "SPEAKING", provider: "qwen" });
       } else if (type === "input_audio_buffer.speech_stopped") {
         jsonMessage(client, { type: "state", state: "PROCESSING", provider: "qwen" });
       } else if (type === "conversation.item.created") {
-        itemPairer.captureCreated(payload);
+        const mapping = itemPairer.captureCreated(payload);
+        if (mapping.itemId && mapping.sourceItemId) flushUnmappedTargets(mapping.itemId, mapping.sourceItemId);
       } else if (type === "conversation.item.input_audio_transcription.text") {
         const value = sourceItem(payload);
+        if (!value) return;
         value.sourceText = normalizedUpstreamText(payload.text, payload.stash);
         partial("source.partial", value.sourceText, value);
       } else if (type === "conversation.item.input_audio_transcription.completed") {
         const value = sourceItem(payload);
+        if (!value) return;
         value.sourceText = normalizedUpstreamText(payload.transcript) || value.sourceText;
+        value.sourceFinal = true;
+        finalPart("source.final", value.sourceText, value);
+        finishItemIfReady(value);
       } else if (type === "response.text.text") {
         const value = translationItem(payload);
+        if (!value) return;
         value.translatedText = normalizedUpstreamText(payload.text, payload.stash);
         partial("translation.partial", value.translatedText, value);
       } else if (type === "response.text.done") {
         const value = translationItem(payload);
+        if (!value) {
+          const key = upstreamId(payload, "item_id", "itemId", "conversation_item_id");
+          const pending = key ? unmappedTargets.get(key) : undefined;
+          if (pending?.length) pending[pending.length - 1].done = true;
+          return;
+        }
         value.translatedText = normalizedUpstreamText(payload.text) || value.translatedText;
-        finalize(value.itemId);
+        value.translationFinal = true;
+        finalPart("translation.final", value.translatedText, value);
+        finishItemIfReady(value);
       } else if (type === "session.finished") {
         finalize();
         jsonMessage(client, { type: "state", state: "ENDED", provider: "qwen" });
@@ -233,6 +281,6 @@ export async function handleRealtimeUpgrade(request: Request, env: RealtimeEnvir
   });
   server.addEventListener("close", () => { closed = true; upstream?.close(1000, "client closed"); });
 
-  const init = { status: 101, webSocket: client } as unknown as ResponseInit;
+  const init = { status: 101, webSocket: responseSocket } as unknown as ResponseInit;
   return new Response(null, init);
 }
