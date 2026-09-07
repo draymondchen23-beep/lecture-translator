@@ -343,7 +343,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
         } as TranscriptSegment;
         if (!existing) next.paragraphId = assignParagraphId(session.segments, next);
         const segments = existing ? session.segments.map((item) => item.id === next.id ? next : item) : [...session.segments, next];
-        return { ...session, segments: segments.sort((a, b) => a.sequence - b.sequence) };
+        return { ...session, segments: migrateParagraphIds(segments) };
       });
       if (incoming.sourceStatus === "draft" && incoming.sourceText) setLatestAnchorId(incoming.segmentId);
       return;
@@ -372,7 +372,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
       updateSession(sessionId, (current) => {
         if (current.segments.some((item) => item.id === segment.id)) return current;
         segment.paragraphId = assignParagraphId(current.segments, segment);
-        return { ...current, segments: [...current.segments, segment] };
+        return { ...current, segments: migrateParagraphIds([...current.segments, segment]) };
       });
       setPartial((current) => reducePartialEvent(current, event));
       if (shouldRefineFinal(event) && finalSegmentGateRef.current.claim(sessionId, segment.id)) void refineSegment(sessionId, segment);
@@ -715,7 +715,18 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
     workspace.sessions.forEach((session) => groups[session.pinned ? "Pinned" : relativeGroup(session.date)].push(session));
     return groups;
   }, [workspace.sessions]);
-  const paragraphs = useMemo(() => groupParagraphs(activeSession.segments), [activeSession.segments]);
+  const hasLiveContent = Boolean(partial.source || partial.translation);
+  const liveSegment = useMemo(() => hasLiveContent ? ({
+    id: `live:${partial.sequence}`, paragraphId: "", sessionId: activeSession.id,
+    sequence: activeSession.segments.reduce((next, segment) => Math.max(next, segment.sequence + 1), partial.sequence),
+    startTime: 0, endTime: 0, sourceText: partial.source, translatedText: partial.translation,
+    sourceLanguage: "en", targetLanguage: "zh", provider: activeProvider || "qwen", speaker: "Lecturer",
+    confidence: null, isFinal: true, sourceStatus: "draft", translationStatus: "draft",
+    createdAt: "", bookmarked: false, refinementState: "idle",
+  } satisfies TranscriptSegment) : null, [hasLiveContent, partial, activeSession.id, activeSession.segments, activeProvider]);
+  // The provisional tail goes through the same source-sentence grouping as
+  // saved rows; it must not be unconditionally appended to the last paragraph.
+  const paragraphs = useMemo(() => groupParagraphs([...activeSession.segments, ...(liveSegment ? [liveSegment] : [])]), [activeSession.segments, liveSegment]);
   const filteredParagraphs = useMemo(() => paragraphs.filter((paragraph) => paragraph.segments.some((segment) => {
     if (tab === "bookmarks" && !segment.bookmarked) return false;
     return !query || `${segment.sourceText} ${segment.translatedText}`.toLowerCase().includes(query.toLowerCase());
@@ -723,17 +734,13 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
   const filteredSegments = filteredParagraphs.flatMap((paragraph) => paragraph.segments);
   const visibleParagraphs = showOlder || filteredParagraphs.length <= 500 ? filteredParagraphs : filteredParagraphs.slice(-500);
   const visibleSegments = visibleParagraphs.flatMap((paragraph) => paragraph.segments);
-  const hasLiveContent = Boolean(partial.source || partial.translation);
-  const latestVisibleSegmentId = latestAnchorId && visibleSegments.some((segment) => segment.id === latestAnchorId)
-    ? latestAnchorId : (!hasLiveContent ? visibleSegments.at(-1)?.id || null : null);
-  const liveParagraphId = visibleParagraphs.at(-1)?.id || `live:${partial.sequence}`;
-  const liveSegment = hasLiveContent ? ({ id: `live:${partial.sequence}`, paragraphId: liveParagraphId, sessionId: activeSession.id, sequence: partial.sequence, startTime: 0, endTime: 0, sourceText: partial.source, translatedText: partial.translation, sourceLanguage: "en", targetLanguage: "zh", provider: activeProvider || "qwen", speaker: "Lecturer", confidence: null, isFinal: true, createdAt: new Date().toISOString(), bookmarked: false, refinementState: "idle" } satisfies TranscriptSegment) : null;
-  const orderedParagraphs = liveSegment && visibleParagraphs.length ? [...visibleParagraphs.slice(0, -1), { ...visibleParagraphs.at(-1)!, segments: [...visibleParagraphs.at(-1)!.segments, liveSegment] }] : liveSegment ? [{ id: liveSegment.paragraphId, segments: [liveSegment] }] : visibleParagraphs;
-  const latestSourceRow = [...visibleSegments, ...(liveSegment ? [liveSegment] : [])].filter((segment) => segment.sourceText.trim()).reduce<TranscriptSegment | null>((latest, segment) => !latest || segment.sequence > latest.sequence ? segment : latest, null);
+  const orderedParagraphs = visibleParagraphs;
+  const visibleRowIds = JSON.stringify(orderedParagraphs.map((paragraph) => paragraph.id));
+  const latestSourceRow = visibleSegments.filter((segment) => segment.sourceText.trim()).reduce<TranscriptSegment | null>((latest, segment) => !latest || segment.sequence > latest.sequence ? segment : latest, null);
   const centerActiveRow = useCallback((behavior: ScrollBehavior = "auto") => {
     const container = transcriptRef.current;
     const row = activeRowRef.current;
-    if (!container || !row || !autoFollowing) return;
+    if (!container || !row || !autoFollowing || !workspace.settings.autoScroll) return;
     const rect = container.getBoundingClientRect();
     const dockTop = dockRef.current?.getBoundingClientRect().top ?? rect.bottom;
     const sticky = container.querySelector<HTMLElement>(`.${styles.columnTitle}`);
@@ -757,7 +764,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
     if (Math.abs(delta) < 18) return;
     const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     container.scrollBy({ top: delta, behavior: behavior === "auto" || reduced ? "instant" : behavior });
-  }, [autoFollowing]);
+  }, [autoFollowing, workspace.settings.autoScroll]);
   const centerFrameRef = useRef<number | null>(null);
   const captureManualAnchor = useCallback(() => {
     const container = transcriptRef.current;
@@ -805,7 +812,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
     container.querySelectorAll<HTMLElement>("[data-paragraph-id]").forEach((paragraph) => observer.observe(paragraph));
     if (dockRef.current) observer.observe(dockRef.current);
     return () => observer.disconnect();
-  }, [autoFollowing, centerActiveRow, orderedParagraphs.length, tab]);
+  }, [autoFollowing, centerActiveRow, visibleRowIds, tab]);
   const suspendFollow = useCallback(() => { captureManualAnchor(); setAutoFollowing(false); }, [captureManualAnchor]);
   return <div className={`${styles.app} ${sidebarCollapsed ? styles.appSidebarCollapsed : ""}`}>
     <iframe className={styles.brandOrbsBackground} src="/backgrounds/brand-orbs-codex.html" title="" aria-hidden="true" tabIndex={-1} />
@@ -853,11 +860,11 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
       <div className={`${styles.content} ${tab === "transcript" || tab === "bookmarks" ? styles.transcriptOnlyContent : ""}`}>
         {tab === "transcript" || tab === "bookmarks" ? <div className={styles.transcript}>
           {!activeSession.segments.length && !partial.source ? <div className={styles.emptyState}><h2>Start a lecture</h2><p>Live transcription, translation and AI notes.</p>{providerStatusLoaded && !providerStatus.qwen && !providerStatus.tencent ? <div className={styles.setupNotice}><strong>Translation setup required</strong><span>Qwen and Tencent are not configured on this server.</span><button onClick={() => setSettingsOpen(true)}>View API status</button></div> : null}<button onClick={startLecture}><Icon name="mic" /> Start lecture</button></div> : null}
-          {!showOlder && filteredParagraphs.length > 500 ? <button className={styles.loadOlder} onClick={() => setShowOlder(true)}>Show {filteredParagraphs.length - 500} older paragraphs</button> : null}
+          {!showOlder && filteredParagraphs.length > 500 ? <button className={styles.loadOlder} onClick={() => setShowOlder(true)}>Show {filteredParagraphs.length - 500} older sentences</button> : null}
           {(orderedParagraphs.length || tab === "bookmarks") ? <div ref={transcriptRef} className={styles.transcriptStream} tabIndex={0} onWheel={suspendFollow} onTouchMove={suspendFollow} onKeyDown={(event) => { if (["ArrowUp", "PageUp", "Home", "ArrowDown", "PageDown", "End"].includes(event.key)) suspendFollow(); }} onScroll={() => { if (!autoFollowing) requestAnimationFrame(captureManualAnchor); }}>
             <div className={styles.columnTitle}><span>English</span><span>中文</span></div>
             <div className={styles.transcriptRunway} aria-hidden="true" />
-            {orderedParagraphs.map((paragraph) => <TranscriptParagraph key={paragraph.id} paragraph={paragraph} live={paragraph.id === liveSegment?.paragraphId} query={query} editingId={editingId} activeId={latestSourceRow?.id || null} rowRef={(element) => { activeRowRef.current = element; }} onBookmark={bookmark} onAsk={askAI} onEdit={setEditingId} onSaveEdit={saveEdit} />)}
+            {orderedParagraphs.map((paragraph) => <TranscriptParagraph key={paragraph.id} paragraph={paragraph} live={paragraph.segments.some((segment) => segment.id === liveSegment?.id)} query={query} editingId={editingId} activeId={latestSourceRow?.id || null} rowRef={(element) => { activeRowRef.current = element; }} onBookmark={bookmark} onAsk={askAI} onEdit={setEditingId} onSaveEdit={saveEdit} />)}
             {tab === "bookmarks" && !filteredSegments.length ? <div className={styles.emptySmall}><Icon name="bookmark" /><p>No bookmarks yet.</p></div> : null}
             <div className={styles.transcriptRunway} aria-hidden="true" />
           </div> : null}

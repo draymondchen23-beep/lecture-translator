@@ -284,9 +284,9 @@
   }
 }
 
-.paragraph { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-block: 0 16px; padding: 0 20px; }
-.paragraphColumn { min-width: 0; }
-.paragraphColumn + .paragraphColumn { padding-left: 24px; border-left: 1px solid var(--border); }
+.paragraph { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; column-gap: 24px; margin-block: 0 10px; padding: 0 20px; }
+.paragraphColumn { min-width: 0; font-size: 17px; line-height: 1.7; }
+.paragraphColumn + .paragraphColumn { padding-left: 24px; }
 .segmentInline, .translationOnly { position: relative; display: inline; }
 .activeSegment { color: color-mix(in srgb, var(--accent) 78%, var(--text)); }
 .inlineEdit { display: block; margin: 8px 0; }
@@ -298,8 +298,8 @@
 .segmentBody { min-width: 0; }
 .bilingualColumns, .liveBilingual { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
 .languageLabel { display: block; margin-bottom: 7px; color: var(--text-3); font-size: 9.5px; font-weight: 620; letter-spacing: .07em; text-transform: uppercase; }
-.sourceText { font-size: 17px; line-height: 1.65; letter-spacing: -.012em; overflow-wrap: anywhere; }
-.translationOnly, .translationText { color: var(--text-2); font-size: 15.5px; line-height: 1.72; overflow-wrap: anywhere; }
+.sourceText { font-size: 17px; line-height: 1.7; letter-spacing: -.012em; overflow-wrap: anywhere; }
+.translationOnly, .translationText { color: var(--text-2); font-size: 17px; line-height: 1.7; overflow-wrap: anywhere; }
 .bilingualColumns .translationText, .liveBilingual .translationText { margin-top: 0; }
 .muted { color: var(--text-3); }
 .providerTag { display: inline-block; margin-top: 10px; color: var(--text-3); font-size: 9.5px; letter-spacing: .01em; }
