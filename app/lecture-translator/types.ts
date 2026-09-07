@@ -14,6 +14,7 @@ export type LectureState =
 
 export type TranscriptSegment = {
   id: string;
+  paragraphId: string;
   sessionId: string;
   sequence: number;
   startTime: number;
@@ -115,6 +116,7 @@ export type RealtimeServerEvent =
     translationRevision: number;
     translationStatus: "idle" | "pending" | "draft" | "final" | "error";
     provider: ActiveProvider;
+    speaker?: string;
     requestId?: string;
     itemId?: string;
     responseId?: string;

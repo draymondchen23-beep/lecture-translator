@@ -15,22 +15,22 @@ function openDatabase() {
   });
 }
 
-export async function loadWorkspace() {
+export async function loadWorkspace(key = WORKSPACE_KEY) {
   const database = await openDatabase();
   return new Promise<Workspace | null>((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, "readonly");
-    const request = transaction.objectStore(STORE_NAME).get(WORKSPACE_KEY);
+    const request = transaction.objectStore(STORE_NAME).get(key);
     request.onsuccess = () => resolve((request.result as Workspace | undefined) ?? null);
     request.onerror = () => reject(request.error);
     transaction.oncomplete = () => database.close();
   });
 }
 
-export async function saveWorkspace(workspace: Workspace) {
+export async function saveWorkspace(workspace: Workspace, key = WORKSPACE_KEY) {
   const database = await openDatabase();
   return new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, "readwrite");
-    transaction.objectStore(STORE_NAME).put(workspace, WORKSPACE_KEY);
+    transaction.objectStore(STORE_NAME).put(workspace, key);
     transaction.oncomplete = () => {
       database.close();
       resolve();

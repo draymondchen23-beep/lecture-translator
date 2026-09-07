@@ -82,10 +82,10 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.doesNotMatch(page, /Preview fake stream|runFakeStream/);
   assert.match(page, /Jump to live/);
   assert.doesNotMatch(page, /useProgressiveText/);
-  assert.match(page, /const TranscriptRow = memo/);
-  assert.match(page, /styles\.pairedSegment/);
+  assert.match(page, /const TranscriptParagraph = memo/);
+  assert.match(page, /groupParagraphs/);
   assert.match(page, /data-segment-id=/);
-  assert.match(page, /orderedSegments\.map\(\(segment\) => <TranscriptRow/);
+  assert.match(page, /orderedParagraphs\.map\(\(paragraph\) => <TranscriptParagraph/);
   assert.match(page, /incoming\.type === "segment\.upsert"/);
   assert.doesNotMatch(page, /finalVisual|animateTranslation|translationDisplay/);
   assert.match(page, /onWheel=/);
@@ -94,7 +94,7 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(page, /activeRowRef/);
   assert.match(page, /centerActiveRow/);
   assert.match(page, /setAutoFollowing\(true\)/);
-  assert.match(page, /styles\.pairedSegment/);
+  assert.match(page, /styles\.paragraph/);
   assert.match(page, /styles\.columnTitle/);
   assert.match(page, /styles\.transcriptStream/);
   assert.match(page, /styles\.transcriptRunway/);

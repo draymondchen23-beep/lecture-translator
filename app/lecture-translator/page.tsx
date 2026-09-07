@@ -25,11 +25,13 @@ import { createFinalSegmentGate, shouldRefineFinal } from "./incremental-refinem
 import { AuthPanel, type SignedInUser } from "./auth-panel";
 import { splitSentences } from "./live-display.mjs";
 import { effectiveViewport, targetDelta } from "./follow-geometry.mjs";
+import { assignParagraphId, groupParagraphs, migrateParagraphIds } from "./paragraph-grouping.mjs";
 
 type Tab = "transcript" | "notes" | "terms" | "bookmarks";
 type AssistAction = "explain" | "simplify" | "example" | "term";
 
 const isDevelopment = process.env.NODE_ENV !== "production";
+const REPLAY_WORKSPACE_KEY = "paragraph-replay";
 const providerNames: Record<ProviderPreference, string> = { auto: "Auto", qwen: "Qwen", tencent: "Tencent" };
 const stateNames = {
   IDLE: "Ready",
@@ -89,7 +91,10 @@ function seedWorkspace(): Workspace {
 function migrateLegacy(value: unknown): Workspace | null {
   if (!value || typeof value !== "object") return null;
   const legacy = value as Record<string, unknown>;
-  if (legacy.version === 2 && Array.isArray(legacy.sessions)) return legacy as unknown as Workspace;
+  if (legacy.version === 2 && Array.isArray(legacy.sessions)) {
+    const workspace = legacy as unknown as Workspace;
+    return { ...workspace, sessions: workspace.sessions.map((session) => ({ ...session, segments: migrateParagraphIds(session.segments || []) })) };
+  }
   if (legacy.version !== 1 || !Array.isArray(legacy.projects)) return null;
   const sessions: LectureSession[] = [];
   for (const projectValue of legacy.projects) {
@@ -113,7 +118,7 @@ function migrateLegacy(value: unknown): Workspace | null {
         segments: oldSegments.map((segmentValue, index) => {
           const segment = segmentValue as Record<string, unknown>;
           return {
-            id: String(segment.id || uid()), sessionId, sequence: index, startTime: index * 8, endTime: index * 8 + 8,
+            id: String(segment.id || uid()), paragraphId: "", sessionId, sequence: index, startTime: index * 8, endTime: index * 8 + 8,
             sourceText: String(segment.english || ""), translatedText: String(segment.chinese || ""), sourceLanguage: "en", targetLanguage: "zh",
             provider: segment.provider === "tencent" ? "tencent" : "qwen", speaker: "Lecturer", confidence: null, isFinal: true,
             createdAt, bookmarked: false, refinementState: "idle",
@@ -123,6 +128,7 @@ function migrateLegacy(value: unknown): Workspace | null {
     }
   }
   if (!sessions.length) return null;
+  sessions.forEach((session) => { session.segments = migrateParagraphIds(session.segments); });
   const next = seedWorkspace();
   return { ...next, sessions, activeSessionId: sessions[0].id };
 }
@@ -198,41 +204,39 @@ function Icon({ name }: { name: "menu" | "plus" | "search" | "settings" | "copy"
   return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
-const TranscriptRow = memo(function TranscriptRow({
-  segment, query, editing, rowRef, live, onBookmark, onAsk, onEdit, onSaveEdit,
-}: {
-  segment: TranscriptSegment; query: string; editing: boolean; live?: boolean;
+const SegmentInline = memo(function SegmentInline({ segment, query, editing, active, live, rowRef, onBookmark, onAsk, onEdit, onSaveEdit }: {
+  segment: TranscriptSegment; query: string; editing: boolean; active: boolean; live?: boolean;
   rowRef?: (element: HTMLElement | null) => void;
-  onBookmark(id: string): void; onAsk(segment: TranscriptSegment): void; onEdit(id: string): void;
-  onSaveEdit(id: string, source: string, translation: string): void;
+  onBookmark(id: string): void; onAsk(segment: TranscriptSegment): void; onEdit(id: string): void; onSaveEdit(id: string, source: string, translation: string): void;
 }) {
   const [source, setSource] = useState(segment.sourceText);
   const [translation, setTranslation] = useState(segment.translatedText);
   useEffect(() => { setSource(segment.sourceText); setTranslation(segment.translatedText); }, [segment.sourceText, segment.translatedText]);
   const highlighted = query && `${segment.sourceText} ${segment.translatedText}`.toLowerCase().includes(query.toLowerCase());
-  const sourceSentences = splitSentences(segment.sourceText, "en");
-  const translationSentences = splitSentences(segment.translatedText, "zh");
   const sourceStatus = (segment as TranscriptSegment & { sourceStatus?: string }).sourceStatus;
-  const translationStatus = (segment as TranscriptSegment & { translationStatus?: string }).translationStatus;
-  const isDraft = live || sourceStatus === "draft";
-  return <article ref={rowRef} className={`${styles.segment} ${styles.pairedSegment} ${isDraft ? styles.draftSegment : ""} ${live ? styles.liveSegment : ""} ${highlighted ? styles.searchMatch : ""}`} id={`segment-${segment.id}`} data-segment-id={segment.id}>
-    <div className={styles.segmentBody}>
-      {editing ? <>
+  if (editing) return <span className={styles.inlineEdit} data-segment-id={segment.id}>
         <textarea aria-label="English transcript" value={source} onChange={(event) => setSource(event.target.value)} />
         <textarea aria-label="Chinese translation" value={translation} onChange={(event) => setTranslation(event.target.value)} />
         <div className={styles.editActions}><button onClick={() => onSaveEdit(segment.id, source, translation)}>Save</button><button onClick={() => onEdit("")}>Cancel</button></div>
-      </> : <div className={styles.bilingualColumns}>
-        <div>{sourceSentences.length ? sourceSentences.map((sentence, index) => <p key={`${segment.id}-source-${index}`} className={styles.sourceText}>{sentence}{live && index === sourceSentences.length - 1 ? <i className={styles.cursor} /> : null}</p>) : <p className={styles.sourceText}><span className={styles.muted}>Listening…</span></p>}</div>
-        <div className={translationStatus === "draft" || translationStatus === "pending" ? styles.translationDraft : ""}>{translationSentences.length ? translationSentences.map((sentence, index) => <p key={`${segment.id}-translation-${index}`} className={styles.translationText}>{sentence}</p>) : <p className={styles.translationText}><span className={styles.muted}>Translation pending…</span></p>}</div>
-      </div>}
-      {!live ? <span className={styles.providerTag}>{segment.provider === "qwen" ? "Qwen" : "Tencent"}{segment.refinementState === "refined" ? " · MT refined" : ""}</span> : <span className={styles.liveLabel}>Live</span>}
-    </div>
-    {!live ? <div className={styles.segmentActions} aria-label="Transcript actions">
+    </span>;
+  return <span ref={rowRef} className={`${styles.segmentInline} ${active ? styles.activeSegment : ""} ${live || sourceStatus === "draft" ? styles.draftSegment : ""} ${highlighted ? styles.searchMatch : ""}`} id={`segment-${segment.id}`} data-segment-id={segment.id}>
+    <span className={styles.sourceText}>{segment.sourceText || <span className={styles.muted}>Listening…</span>}{live ? <i className={styles.cursor} /> : null}</span>{" "}
+    {!live ? <span className={styles.segmentActions} aria-label="Transcript actions">
       <button title="Copy" onClick={() => navigator.clipboard.writeText(`${segment.sourceText}\n${segment.translatedText}`)}><Icon name="copy" /></button>
       <button title="Bookmark" className={segment.bookmarked ? styles.actionActive : ""} onClick={() => onBookmark(segment.id)}><Icon name="bookmark" /></button>
       <button title="Ask AI" onClick={() => onAsk(segment)}><Icon name="spark" /></button>
       <button title="Edit" onClick={() => onEdit(segment.id)}><Icon name="edit" /></button>
-    </div> : null}
+    </span> : null}
+  </span>;
+});
+
+const TranscriptParagraph = memo(function TranscriptParagraph({ paragraph, query, editingId, activeId, live, rowRef, onBookmark, onAsk, onEdit, onSaveEdit }: {
+  paragraph: { id: string; segments: TranscriptSegment[] }; query: string; editingId: string; activeId: string | null; live?: boolean;
+  rowRef?: (element: HTMLElement | null) => void; onBookmark(id: string): void; onAsk(segment: TranscriptSegment): void; onEdit(id: string): void; onSaveEdit(id: string, source: string, translation: string): void;
+}) {
+  return <article className={`${styles.paragraph} ${live ? styles.liveParagraph : ""}`} data-paragraph-id={paragraph.id}>
+    <div className={styles.paragraphColumn}>{paragraph.segments.map((segment) => <SegmentInline key={segment.id} segment={segment} query={query} editing={editingId === segment.id} active={segment.id === activeId} live={segment.id.startsWith("live:")} rowRef={segment.id === activeId ? rowRef : undefined} onBookmark={onBookmark} onAsk={onAsk} onEdit={onEdit} onSaveEdit={onSaveEdit} />)}</div>
+    <div className={styles.paragraphColumn}>{paragraph.segments.every((segment) => !segment.translatedText) ? <span className={styles.muted}>Translation pending…</span> : paragraph.segments.map((segment) => editingId === segment.id ? null : <span key={segment.id} className={`${styles.translationOnly} ${segment.translationStatus === "draft" || segment.translationStatus === "pending" ? styles.translationDraft : ""} ${segment.id === activeId ? styles.activeSegment : ""}`} data-segment-id={`${segment.id}-translation`}>{segment.translatedText}</span>)}</div>
   </article>;
 });
 
@@ -305,6 +309,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
       sourceText?: string; sourceRevision?: number; sourceStatus?: "draft" | "final";
       translationText?: string; translationRevision?: number; translationStatus?: string;
       provider?: ActiveProvider; requestId?: string;
+      speaker?: string;
     };
     if (incoming.type === "segment.upsert" && incoming.segmentId && (!incoming.sessionId || incoming.sessionId === sessionId)) {
       updateSession(sessionId, (session) => {
@@ -312,27 +317,31 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
         const sessionStart = session.startedAt ? Date.parse(session.startedAt) : 0;
         const toSeconds = (value: number | undefined, fallback: number) => value == null ? fallback : Math.max(0, value > 10_000 ? (value - sessionStart) / 1_000 : value);
         const existingMeta = existing as TranscriptSegment & { sourceRevision?: number; translationRevision?: number; sourceStatus?: string; translationStatus?: string };
-        if (existing && ((incoming.sourceRevision ?? 0) < (existingMeta.sourceRevision ?? 0) || (incoming.translationRevision ?? 0) < (existingMeta.translationRevision ?? 0))) return session;
+        const sourceFresh = !existing || (incoming.sourceRevision ?? 0) >= (existingMeta.sourceRevision ?? 0);
+        const translationFresh = !existing || (incoming.translationRevision ?? 0) >= (existingMeta.translationRevision ?? 0);
+        if (existing && !sourceFresh && !translationFresh) return session;
         const next: TranscriptSegment = existing ? ({
           ...existing,
           sequence: incoming.sequence ?? existing.sequence,
           startTime: toSeconds(incoming.startTime, existing.startTime),
           endTime: toSeconds(incoming.endTime, existing.endTime),
-          sourceText: incoming.sourceText ?? existing.sourceText,
-          translatedText: incoming.translationText ?? existing.translatedText,
+          sourceText: sourceFresh ? incoming.sourceText ?? existing.sourceText : existing.sourceText,
+          translatedText: translationFresh && incoming.translationText ? incoming.translationText : existing.translatedText,
           provider: incoming.provider ?? existing.provider,
+          speaker: incoming.speaker ?? existing.speaker,
           isFinal: incoming.sourceStatus === "final" ? true : existing.isFinal,
-          sourceRevision: incoming.sourceRevision, sourceStatus: incoming.sourceStatus,
-          translationRevision: incoming.translationRevision, translationStatus: incoming.translationStatus,
+          sourceRevision: sourceFresh ? incoming.sourceRevision ?? existing.sourceRevision : existing.sourceRevision, sourceStatus: sourceFresh ? incoming.sourceStatus ?? existing.sourceStatus : existing.sourceStatus,
+          translationRevision: translationFresh ? incoming.translationRevision ?? existing.translationRevision : existing.translationRevision, translationStatus: translationFresh ? incoming.translationStatus ?? existing.translationStatus : existing.translationStatus,
         } as TranscriptSegment) : {
-          id: incoming.segmentId, sessionId, sequence: incoming.sequence ?? session.segments.length,
+          id: incoming.segmentId, paragraphId: "", sessionId, sequence: incoming.sequence ?? session.segments.length,
           startTime: toSeconds(incoming.startTime, 0), endTime: toSeconds(incoming.endTime, 0),
           sourceText: incoming.sourceText ?? "", translatedText: incoming.translationText ?? "",
-          sourceLanguage: "en", targetLanguage: "zh", provider: incoming.provider ?? "qwen", speaker: "Lecturer", confidence: null,
+          sourceLanguage: "en", targetLanguage: "zh", provider: incoming.provider ?? "qwen", speaker: incoming.speaker || "Lecturer", confidence: null,
           isFinal: true, createdAt: new Date().toISOString(), bookmarked: false, refinementState: "idle",
           sourceRevision: incoming.sourceRevision, sourceStatus: incoming.sourceStatus,
           translationRevision: incoming.translationRevision, translationStatus: incoming.translationStatus,
         } as TranscriptSegment;
+        if (!existing) next.paragraphId = assignParagraphId(session.segments, next);
         const segments = existing ? session.segments.map((item) => item.id === next.id ? next : item) : [...session.segments, next];
         return { ...session, segments: segments.sort((a, b) => a.sequence - b.sequence) };
       });
@@ -353,35 +362,85 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
         // Qwen's sequence restarts after a WebSocket reconnect, while the
         // original final event preserves its start time. Keep those identities
         // distinct so reconnects neither repeat history nor suppress new speech.
-        id: `${sessionId}:${event.sequence}:${event.startedAt}`, sessionId, sequence: event.sequence,
+        id: `${sessionId}:${event.sequence}:${event.startedAt}`, paragraphId: "", sessionId, sequence: event.sequence,
         startTime: Math.max(0, (event.startedAt - sessionStart) / 1_000), endTime: Math.max(0, (event.endedAt - sessionStart) / 1_000),
         sourceText: event.sourceText, translatedText: event.translatedText, sourceLanguage: "en", targetLanguage: "zh",
         provider: event.provider, speaker: "Lecturer", confidence: event.confidence ?? null, isFinal: true,
         createdAt: new Date().toISOString(), bookmarked: false, refinementState: event.refined ? "refined" : "idle",
       };
       setLatestAnchorId(segment.id);
-      updateSession(sessionId, (current) => current.segments.some((item) => item.id === segment.id) ? current : { ...current, segments: [...current.segments, segment] });
+      updateSession(sessionId, (current) => {
+        if (current.segments.some((item) => item.id === segment.id)) return current;
+        segment.paragraphId = assignParagraphId(current.segments, segment);
+        return { ...current, segments: [...current.segments, segment] };
+      });
       setPartial((current) => reducePartialEvent(current, event));
       if (shouldRefineFinal(event) && finalSegmentGateRef.current.claim(sessionId, segment.id)) void refineSegment(sessionId, segment);
     }
   }, [refineSegment, updateSession]);
 
-  const replayFixture = useCallback((kind: "next" | "late") => {
+  const replayFixture = useCallback((kind: "next" | "late" | "run") => {
     if (!replay) return;
+    if (kind === "run") {
+      const replaySession = newSession("paragraph-replay", "2000-01-01T12:00:00.000Z");
+      setWorkspace((current) => ({ ...current, sessions: [replaySession], activeSessionId: replaySession.id }));
+      setPartial({ source: "", translation: "", sequence: 0 });
+      setLatestAnchorId(null);
+      setReplayStep(0);
+      return;
+    }
     const sessionId = activeIdRef.current;
     const sequence = kind === "late" ? 0 : replayStep;
     const segmentId = `${sessionId}:replay:${sequence}`;
-    const source = sequence === 0 ? "The extracellular matrix shapes how cells communicate." : "A short pause does not always mean the thought is complete.";
+    const replayLines = [
+      "The extracellular matrix helps cells coordinate with one another, and you",
+      "do things such as migrate through tissue.",
+      "Its proteins provide both structure and signals.",
+      "They also influence cell adhesion.",
+      "The resulting response depends on receptor binding.",
+      "This can change gene expression.",
+      "The effect is especially important during repair.",
+      "Cells sense stiffness as well as chemistry.",
+      "That information guides movement.",
+      "The matrix is therefore not passive.",
+      "It continuously shapes the local environment.",
+      "These interactions occur at multiple scales.",
+      "Molecules assemble into larger networks.",
+      "Networks alter tissue mechanics.",
+      "Mechanical changes feed back to cells.",
+      "This feedback can be rapid.",
+      "It can also persist over time.",
+      "Researchers measure these effects carefully.",
+      "Their experiments compare controlled conditions.",
+      "The same principle appears in development.",
+      "Now, let us turn to how we measure stiffness.",
+      "We use a simple indentation experiment.",
+    ];
+    const source = replayLines[sequence % replayLines.length];
+    const now = 100_000 + sequence * 2_500 + (sequence >= 20 ? 5_000 : 0);
     if (kind === "late") {
-      const now = Date.now();
       onRealtimeEvent({ type: "segment.upsert", sessionId, segmentId, sequence, startTime: now, endTime: now + 2_000, sourceText: source, sourceRevision: 2, sourceStatus: "final", translationText: "细胞外基质会通过多种复杂的分子机制影响细胞之间的交流、黏附、迁移以及它们对周围微环境变化的响应。", translationRevision: 3, translationStatus: "final", provider: "qwen" } as unknown as RealtimeServerEvent);
     } else {
-      const now = Date.now();
       onRealtimeEvent({ type: "segment.upsert", sessionId, segmentId, sequence, startTime: now, endTime: 0, sourceText: source, sourceRevision: 1, sourceStatus: "draft", translationText: "", translationRevision: 0, translationStatus: "pending", provider: "qwen" } as unknown as RealtimeServerEvent);
-      window.setTimeout(() => onRealtimeEvent({ type: "segment.upsert", sessionId, segmentId, sequence, startTime: now, endTime: now + 2_000, sourceText: source, sourceRevision: 2, sourceStatus: "final", translationText: sequence === 0 ? "细胞外基质会影响细胞之间的交流方式。" : "短暂停顿并不总是意味着一个想法已经完整。", translationRevision: 1, translationStatus: "final", provider: "qwen" } as unknown as RealtimeServerEvent), 120);
+      if (sequence === 0) window.setTimeout(() => onRealtimeEvent({ type: "segment.upsert", sessionId, segmentId, sequence, startTime: now, endTime: 0, sourceText: "The extracellular matrix helps cells coordinate with one another, and you", sourceRevision: 2, sourceStatus: "draft", translationText: "", translationRevision: 0, translationStatus: "pending", provider: "qwen" } as unknown as RealtimeServerEvent), 60);
+      window.setTimeout(() => onRealtimeEvent({ type: "segment.upsert", sessionId, segmentId, sequence, startTime: now, endTime: now + 2_000, sourceText: sequence === 0 ? "The extracellular matrix helps cells coordinate with one another, and you" : source, sourceRevision: sequence === 0 ? 3 : 2, sourceStatus: "final", translationText: sequence === 0 ? "" : sequence === 1 ? "会做诸如穿过组织迁移之类的事情。" : "这是同一自然段中的连续讲解。", translationRevision: sequence === 0 ? 0 : 1, translationStatus: sequence === 0 ? "pending" : "final", provider: "qwen" } as unknown as RealtimeServerEvent), 120);
     }
-    setReplayStep((value) => value + 1);
+    if (kind === "next") setReplayStep((value) => value + 1);
   }, [onRealtimeEvent, replay, replayStep]);
+
+  const saveReplay = useCallback(async () => {
+    if (!replay) return;
+    await saveWorkspace(workspaceRef.current, REPLAY_WORKSPACE_KEY);
+    setNotice("Replay saved separately from your lectures.");
+  }, [replay]);
+  const reloadReplay = useCallback(async () => {
+    if (!replay) return;
+    const saved = migrateLegacy(await loadWorkspace(REPLAY_WORKSPACE_KEY));
+    if (!saved) { setNotice("No saved paragraph replay yet."); return; }
+    setWorkspace(saved);
+    setLatestAnchorId(saved.sessions.find((session) => session.id === saved.activeSessionId)?.segments.at(-1)?.id || null);
+    setNotice("Replay reloaded from isolated storage.");
+  }, [replay]);
 
   const realtime = useRealtimeLecture({
     sequenceBase: activeSession.segments.reduce((maximum, segment) => Math.max(maximum, segment.sequence + 1), 0),
@@ -410,7 +469,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
           localStorage.removeItem("lecture-course-workspace-v1");
           window.history.replaceState(null, "", window.location.pathname);
         }
-        let saved = await loadWorkspace();
+        let saved = migrateLegacy(await loadWorkspace());
         if (!saved) {
           const legacy = localStorage.getItem("lecture-course-workspace-v1");
           saved = legacy ? migrateLegacy(JSON.parse(legacy)) : null;
@@ -656,18 +715,21 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
     workspace.sessions.forEach((session) => groups[session.pinned ? "Pinned" : relativeGroup(session.date)].push(session));
     return groups;
   }, [workspace.sessions]);
-  const filteredSegments = useMemo(() => activeSession.segments.filter((segment) => {
+  const paragraphs = useMemo(() => groupParagraphs(activeSession.segments), [activeSession.segments]);
+  const filteredParagraphs = useMemo(() => paragraphs.filter((paragraph) => paragraph.segments.some((segment) => {
     if (tab === "bookmarks" && !segment.bookmarked) return false;
-    if (!query) return true;
-    return `${segment.sourceText} ${segment.translatedText}`.toLowerCase().includes(query.toLowerCase());
-  }), [activeSession.segments, query, tab]);
-  const visibleSegments = showOlder || filteredSegments.length <= 500 ? filteredSegments : filteredSegments.slice(-500);
+    return !query || `${segment.sourceText} ${segment.translatedText}`.toLowerCase().includes(query.toLowerCase());
+  })), [paragraphs, query, tab]);
+  const filteredSegments = filteredParagraphs.flatMap((paragraph) => paragraph.segments);
+  const visibleParagraphs = showOlder || filteredParagraphs.length <= 500 ? filteredParagraphs : filteredParagraphs.slice(-500);
+  const visibleSegments = visibleParagraphs.flatMap((paragraph) => paragraph.segments);
   const hasLiveContent = Boolean(partial.source || partial.translation);
   const latestVisibleSegmentId = latestAnchorId && visibleSegments.some((segment) => segment.id === latestAnchorId)
     ? latestAnchorId : (!hasLiveContent ? visibleSegments.at(-1)?.id || null : null);
-  const liveSegment = hasLiveContent ? ({ id: `live:${partial.sequence}`, sessionId: activeSession.id, sequence: partial.sequence, startTime: 0, endTime: 0, sourceText: partial.source, translatedText: partial.translation, sourceLanguage: "en", targetLanguage: "zh", provider: activeProvider || "qwen", speaker: "Lecturer", confidence: null, isFinal: true, createdAt: new Date().toISOString(), bookmarked: false, refinementState: "idle" } satisfies TranscriptSegment) : null;
-  const orderedSegments = liveSegment ? [...visibleSegments, liveSegment] : visibleSegments;
-  const latestSourceRow = orderedSegments.filter((segment) => segment.sourceText.trim()).reduce<TranscriptSegment | null>((latest, segment) => !latest || segment.sequence > latest.sequence ? segment : latest, null);
+  const liveParagraphId = visibleParagraphs.at(-1)?.id || `live:${partial.sequence}`;
+  const liveSegment = hasLiveContent ? ({ id: `live:${partial.sequence}`, paragraphId: liveParagraphId, sessionId: activeSession.id, sequence: partial.sequence, startTime: 0, endTime: 0, sourceText: partial.source, translatedText: partial.translation, sourceLanguage: "en", targetLanguage: "zh", provider: activeProvider || "qwen", speaker: "Lecturer", confidence: null, isFinal: true, createdAt: new Date().toISOString(), bookmarked: false, refinementState: "idle" } satisfies TranscriptSegment) : null;
+  const orderedParagraphs = liveSegment && visibleParagraphs.length ? [...visibleParagraphs.slice(0, -1), { ...visibleParagraphs.at(-1)!, segments: [...visibleParagraphs.at(-1)!.segments, liveSegment] }] : liveSegment ? [{ id: liveSegment.paragraphId, segments: [liveSegment] }] : visibleParagraphs;
+  const latestSourceRow = [...visibleSegments, ...(liveSegment ? [liveSegment] : [])].filter((segment) => segment.sourceText.trim()).reduce<TranscriptSegment | null>((latest, segment) => !latest || segment.sequence > latest.sequence ? segment : latest, null);
   const centerActiveRow = useCallback((behavior: ScrollBehavior = "auto") => {
     const container = transcriptRef.current;
     const row = activeRowRef.current;
@@ -676,8 +738,22 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
     const dockTop = dockRef.current?.getBoundingClientRect().top ?? rect.bottom;
     const sticky = container.querySelector<HTMLElement>(`.${styles.columnTitle}`);
     const viewport = effectiveViewport({ top: rect.top, bottom: rect.bottom, sticky: sticky?.getBoundingClientRect().bottom ?? rect.top, dockTop });
-    const rowRect = row.getBoundingClientRect();
-    const delta = targetDelta(viewport, { top: rowRect.top, bottom: rowRect.bottom, height: rowRect.height });
+    const sourceRect = row.getBoundingClientRect();
+    const translation = row.dataset.segmentId ? container.querySelector<HTMLElement>(`[data-segment-id="${CSS.escape(row.dataset.segmentId)}-translation"]`) : null;
+    const translationRect = translation?.getBoundingClientRect();
+    const paragraph = row.closest<HTMLElement>("[data-paragraph-id]");
+    const paragraphRect = paragraph?.getBoundingClientRect();
+    const combinedRect = translationRect ? {
+      top: Math.min(sourceRect.top, translationRect.top), bottom: Math.max(sourceRect.bottom, translationRect.bottom),
+      height: Math.max(sourceRect.bottom, translationRect.bottom) - Math.min(sourceRect.top, translationRect.top),
+    } : sourceRect;
+    const sourceTail = Array.from(row.getClientRects()).at(-1) || sourceRect;
+    const translationTail = translation ? Array.from(translation.getClientRects()).at(-1) : null;
+    const tail = translationTail && translationTail.bottom > sourceTail.bottom ? translationTail : sourceTail;
+    const rowRect = paragraphRect && paragraphRect.height <= viewport.bottom - viewport.top ? paragraphRect
+      : combinedRect.height > viewport.bottom - viewport.top ? { top: tail.top, bottom: tail.bottom, height: tail.height }
+      : combinedRect;
+    const delta = targetDelta(viewport, rowRect);
     if (Math.abs(delta) < 18) return;
     const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     container.scrollBy({ top: delta, behavior: behavior === "auto" || reduced ? "instant" : behavior });
@@ -726,12 +802,10 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
       }
     });
     observer.observe(container);
-    const list = container.firstElementChild?.nextElementSibling;
-    if (list) observer.observe(list);
-    container.querySelectorAll<HTMLElement>("[data-segment-id]").forEach((row) => observer.observe(row));
+    container.querySelectorAll<HTMLElement>("[data-paragraph-id]").forEach((paragraph) => observer.observe(paragraph));
     if (dockRef.current) observer.observe(dockRef.current);
     return () => observer.disconnect();
-  }, [autoFollowing, centerActiveRow, orderedSegments.length, tab]);
+  }, [autoFollowing, centerActiveRow, orderedParagraphs.length, tab]);
   const suspendFollow = useCallback(() => { captureManualAnchor(); setAutoFollowing(false); }, [captureManualAnchor]);
   return <div className={`${styles.app} ${sidebarCollapsed ? styles.appSidebarCollapsed : ""}`}>
     <iframe className={styles.brandOrbsBackground} src="/backgrounds/brand-orbs-codex.html" title="" aria-hidden="true" tabIndex={-1} />
@@ -779,11 +853,11 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
       <div className={`${styles.content} ${tab === "transcript" || tab === "bookmarks" ? styles.transcriptOnlyContent : ""}`}>
         {tab === "transcript" || tab === "bookmarks" ? <div className={styles.transcript}>
           {!activeSession.segments.length && !partial.source ? <div className={styles.emptyState}><h2>Start a lecture</h2><p>Live transcription, translation and AI notes.</p>{providerStatusLoaded && !providerStatus.qwen && !providerStatus.tencent ? <div className={styles.setupNotice}><strong>Translation setup required</strong><span>Qwen and Tencent are not configured on this server.</span><button onClick={() => setSettingsOpen(true)}>View API status</button></div> : null}<button onClick={startLecture}><Icon name="mic" /> Start lecture</button></div> : null}
-          {!showOlder && filteredSegments.length > 500 ? <button className={styles.loadOlder} onClick={() => setShowOlder(true)}>Show {filteredSegments.length - 500} older segments</button> : null}
-          {(orderedSegments.length || tab === "bookmarks") ? <div ref={transcriptRef} className={styles.transcriptStream} tabIndex={0} onWheel={suspendFollow} onTouchMove={suspendFollow} onKeyDown={(event) => { if (["ArrowUp", "PageUp", "Home", "ArrowDown", "PageDown", "End"].includes(event.key)) suspendFollow(); }} onScroll={() => { if (!autoFollowing) requestAnimationFrame(captureManualAnchor); }}>
+          {!showOlder && filteredParagraphs.length > 500 ? <button className={styles.loadOlder} onClick={() => setShowOlder(true)}>Show {filteredParagraphs.length - 500} older paragraphs</button> : null}
+          {(orderedParagraphs.length || tab === "bookmarks") ? <div ref={transcriptRef} className={styles.transcriptStream} tabIndex={0} onWheel={suspendFollow} onTouchMove={suspendFollow} onKeyDown={(event) => { if (["ArrowUp", "PageUp", "Home", "ArrowDown", "PageDown", "End"].includes(event.key)) suspendFollow(); }} onScroll={() => { if (!autoFollowing) requestAnimationFrame(captureManualAnchor); }}>
             <div className={styles.columnTitle}><span>English</span><span>中文</span></div>
             <div className={styles.transcriptRunway} aria-hidden="true" />
-            {orderedSegments.map((segment) => <TranscriptRow key={segment.id} segment={segment} live={segment.id === liveSegment?.id} query={query} editing={editingId === segment.id} rowRef={segment.id === latestSourceRow?.id ? (element) => { activeRowRef.current = element; } : undefined} onBookmark={bookmark} onAsk={askAI} onEdit={setEditingId} onSaveEdit={saveEdit} />)}
+            {orderedParagraphs.map((paragraph) => <TranscriptParagraph key={paragraph.id} paragraph={paragraph} live={paragraph.id === liveSegment?.paragraphId} query={query} editingId={editingId} activeId={latestSourceRow?.id || null} rowRef={(element) => { activeRowRef.current = element; }} onBookmark={bookmark} onAsk={askAI} onEdit={setEditingId} onSaveEdit={saveEdit} />)}
             {tab === "bookmarks" && !filteredSegments.length ? <div className={styles.emptySmall}><Icon name="bookmark" /><p>No bookmarks yet.</p></div> : null}
             <div className={styles.transcriptRunway} aria-hidden="true" />
           </div> : null}
@@ -803,7 +877,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
         event.currentTarget.style.setProperty("--glass-x", `${event.clientX - rect.left}px`);
         event.currentTarget.style.setProperty("--glass-y", `${event.clientY - rect.top}px`);
       }}>
-        {replay ? <div className={styles.replayControls} data-replay-step={replayStep}><span>Replay fixture</span><button onClick={() => replayFixture("next")}>Next segment</button><button onClick={() => replayFixture("late")}>Late translation</button></div> : null}
+        {replay ? <div className={styles.replayControls} data-replay-step={replayStep}><span>Paragraph replay</span><button onClick={() => replayFixture("run")}>Run paragraph replay</button><button onClick={() => replayFixture("next")}>Next replay event</button><button onClick={() => replayFixture("late")}>Late translation</button><button onClick={() => void saveReplay()}>Save replay</button><button onClick={() => void reloadReplay()}>Reload replay</button></div> : null}
         {!isRecording ? <button className={styles.primaryControl} onClick={startLecture}><span><Icon name="mic" /></span> Start lecture</button> : <>
           <div className={styles.recordingStatus}><i /><span>{activeSession.status === "paused" ? "Paused" : `${stateNames[realtime.state]} · ${formatTime(elapsed)}`}</span></div>
           <AudioBars level={realtime.level} />
