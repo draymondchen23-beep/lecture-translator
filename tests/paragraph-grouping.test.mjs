@@ -107,6 +107,8 @@ test("unpunctuated continuation and complement fragments stay in the same senten
     ["Because the cells respond to stiffness", "the tissue changes its structure"],
     ["The matrix influences cell adhesion", "which helps cells move through tissue"],
     ["The matrix is", "the material that provides support"],
+    ["We use the data to show", "the cells can change their behaviour"],
+    ["We are trying to explain", "the cells can survive this treatment"],
   ]) {
     const input = pieces.map((source, index) => segment(String(index), index, source, index * 30, index * 30 + 1, { sourceStatus: "final" }));
     assert.equal(groupParagraphs(input).length, 1, pieces.join(" / "));

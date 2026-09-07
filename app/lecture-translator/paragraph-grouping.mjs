@@ -8,13 +8,14 @@ const incompleteEnding = /(?:\b(?:and|or|but|because|if|when|while|than|which|wh
 // local cues are fallbacks, not a claim of general semantic parsing.
 const dependentStart = /^(?:and|or|but|because|if|when|while|although|unless|until|since|as|which|who|whose|where|whether|to|of|for|with|in|on|at|by|from)\b/i;
 const unfinishedPredicate = /\b(?:am|is|are|was|were|be|been|being|can|could|may|might|must|shall|should|will|would|have|has|had|do|does|did|the|a|an|this|these|those|my|your|our|their|its|very|more|less|such|not|think|thinks|know|knows|say|says|said|means|mean|whether|that)$/i;
+const awaitingComplement = /\b(?:show(?:s|ed)?|explain(?:s|ed)?|demonstrate(?:s|d)?|suggest(?:s|ed)?|confirm(?:s|ed)?|assume(?:s|d)?|believe(?:s|d)?|determine(?:s|d)?|understand|understood)$/i;
 const subjectStart = /^(?:i|you|we|they|he|she|it|there|this|that|these|those|the|a|an|my|your|our|their|its|[a-z]+s)\b/i;
 const predicate = /\b(?:am|is|are|was|were|can|could|may|might|must|should|will|would|has|have|had|do|does|did|[a-z]+(?:'s|'re|'ve|'ll)|affect(?:s|ed)?|allow(?:s|ed)?|appear(?:s|ed)?|become(?:s)?|became|cause(?:s|d)?|change(?:s|d)?|communicate(?:s|d)?|compare(?:s|d)?|contain(?:s|ed)?|control(?:s|led)?|depend(?:s|ed)?|describe(?:s|d)?|develop(?:s|ed)?|differ(?:s|ed)?|explain(?:s|ed)?|express(?:es|ed)?|find(?:s)?|found|follow(?:s|ed)?|give(?:s)?|gave|guide(?:s|d)?|happen(?:s|ed)?|help(?:s|ed)?|include(?:s|d)?|influence(?:s|d)?|involve(?:s|d)?|learn(?:s|ed)?|make(?:s)?|made|mean(?:s)?|measure(?:s|d)?|move(?:s|d)?|need(?:s|ed)?|observe(?:s|d)?|occur(?:s|red)?|play(?:s|ed)?|produce(?:s|d)?|provide(?:s|d)?|record(?:s|ed)?|remain(?:s|ed)?|require(?:s|d)?|respond(?:s|ed)?|result(?:s|ed)?|sense(?:s|d)?|shape(?:s|d)?|show(?:s|ed)?|signal(?:s|led)?|start(?:s|ed)?|take(?:s)?|took|use(?:s|d)?|work(?:s|ed)?)\b/i;
 
 function independentClause(text = "") {
   const value = text.replace(/\s+/g, " ").trim().replace(/^(?:now|next|finally|therefore)[,:]?\s+/i, "");
   if (dependentStart.test(value) || !subjectStart.test(value) || value.split(" ").length < 3) return false;
-  if (incompleteEnding.test(value) || unfinishedPredicate.test(value)) return false;
+  if (incompleteEnding.test(value) || unfinishedPredicate.test(value) || awaitingComplement.test(value)) return false;
   // A finite predicate must follow a subject and have a complement. This
   // deliberately leaves uncertain speech attached until more evidence arrives.
   const match = predicate.exec(value);
