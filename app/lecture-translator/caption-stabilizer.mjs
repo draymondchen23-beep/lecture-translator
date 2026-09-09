@@ -18,8 +18,10 @@ export const DEFAULT_BOUNDARY_CONFIG = Object.freeze({
   hardSilenceMs: 1_800,
   resumeMergeMs: 1_200,
   maxDurationMs: 15_000,
-  maxWords: 38,
-  maxChars: 220,
+  // A translation row must stay readable and translate as a paired unit even
+  // when the recognizer never supplies punctuation.
+  maxWords: 18,
+  maxChars: 120,
 });
 
 const CLOSERS = new Set(["\"", "'", "”", "’", ")", "]", "}"]);
@@ -144,14 +146,103 @@ function safeSoftBoundary(value, config, allowTrailing = false) {
   return candidate;
 }
 
-function forcedSplit(value, config) {
+function boundedEnd(value, config) {
   const source = text(value);
   const words = source.split(" ");
-  if (words.length <= config.maxWords && source.length <= config.maxChars) return null;
-  const soft = safeSoftBoundary(source, config);
+  const wordEnd = words.slice(0, Math.min(config.maxWords, words.length)).join(" ").length;
+  const beforeLimit = source.lastIndexOf(" ", config.maxChars);
+  // An individual word can be longer than maxChars. Keep that token whole;
+  // splitting it would corrupt source text and create an untranslatable row.
+  const charEnd = source.length <= config.maxChars
+    ? source.length
+    : beforeLimit > 0
+      ? beforeLimit
+      : (source.indexOf(" ") > 0 ? source.indexOf(" ") : source.length);
+  return Math.min(wordEnd, charEnd);
+}
+
+function naturalClauseBoundary(value, config) {
+  const source = text(value);
+  const limit = boundedEnd(source, config);
+  const prefix = source.slice(0, limit);
+  const markers = /\b(?:now you|although|and if|because|so|while)\b/gi;
+  let candidate = null;
+  for (const match of prefix.matchAll(markers)) {
+    const end = match.index || 0;
+    if (wordCount(prefix.slice(0, end)) >= config.softMinWords) candidate = { end, kind: "forced" };
+  }
+  return candidate;
+}
+
+function forcedSplit(value, config) {
+  const source = text(value);
+  if (wordCount(source) <= config.maxWords && source.length <= config.maxChars) return null;
+  const limit = boundedEnd(source, config);
+  const bounded = source.slice(0, limit);
+  const hard = findSentenceBoundaries(bounded).at(-1);
+  if (hard) return hard;
+  const soft = safeSoftBoundary(bounded, config, true);
   if (soft) return soft;
-  const count = Math.min(config.maxWords, words.length);
-  return { end: words.slice(0, count).join(" ").length, kind: "forced" };
+  const natural = naturalClauseBoundary(bounded, config);
+  if (natural) return natural;
+  // Never split a word merely to meet the display bound. A single oversized
+  // token is retained intact, which is the only lossless representation.
+  return { end: limit, kind: "forced" };
+}
+
+/**
+ * Splits stored or live English source into translation-sized reading units.
+ * It deliberately does not attempt to infer sentence grammar: punctuation is
+ * preferred, then a word boundary is used. Every original word is retained
+ * exactly once (apart from normal whitespace normalization).
+ */
+export function splitReadingUnits(value, config = DEFAULT_BOUNDARY_CONFIG) {
+  const source = text(value);
+  if (!source) return [];
+  const limits = { ...DEFAULT_BOUNDARY_CONFIG, ...config };
+  const units = [];
+  let remaining = source;
+  while (remaining) {
+    const limit = boundedEnd(remaining, limits);
+    const bounded = remaining.slice(0, limit);
+    // Sentence endings split reading units even when the full input is short.
+    const hard = findSentenceBoundaries(bounded)[0];
+    const soft = safeSoftBoundary(bounded, limits, true);
+    const natural = naturalClauseBoundary(bounded, limits);
+    const overLimit = wordCount(remaining) > limits.maxWords || remaining.length > limits.maxChars;
+    if (!overLimit && !hard) {
+      units.push(remaining);
+      break;
+    }
+    const end = hard?.end || soft?.end || natural?.end || limit;
+    units.push(text(remaining.slice(0, end)));
+    remaining = text(remaining.slice(end));
+  }
+  return units;
+}
+
+/**
+ * Browser SpeechRecognition repeatedly sends a replaceable snapshot. Keep a
+ * word cursor for that one snapshot stream, so a later correction to words
+ * already committed cannot be merged back into a newly emitted caption.
+ * A fresh recognizer id/run gets a fresh cursor; real repeated speech remains.
+ */
+export function createSnapshotCursor() {
+  let consumedWords = 0;
+  return {
+    tail(snapshot) {
+      return text(snapshot).split(" ").filter(Boolean).slice(consumedWords).join(" ");
+    },
+    consume(sourceText) {
+      consumedWords += wordCount(sourceText);
+    },
+    reset() {
+      consumedWords = 0;
+    },
+    get consumedWords() {
+      return consumedWords;
+    },
+  };
 }
 
 /** Returns the exact word-prefix shared by two browser interim snapshots. */
@@ -217,7 +308,7 @@ export class SentenceAccumulator {
     const commits = [];
     while (this.stableText) {
       const hard = findSentenceBoundaries(this.stableText)[0];
-      if (hard) {
+      if (hard && hard.end <= boundedEnd(this.stableText, this.config)) {
         // Realtime ASR may briefly attach punctuation to a still-changing
         // hypothesis ("The cell." -> "The cell membrane …"). A final ASR
         // unit is safe; an interim hard mark needs the same short stability
@@ -228,7 +319,7 @@ export class SentenceAccumulator {
         continue;
       }
       const soft = safeSoftBoundary(this.stableText, this.config);
-      if (soft && (final || now - this.lastStableAt >= this.config.boundaryGraceMs)) {
+      if (soft && soft.end <= boundedEnd(this.stableText, this.config) && (final || now - this.lastStableAt >= this.config.boundaryGraceMs)) {
         const commit = this.commitThrough(soft.kind, soft.end, now);
         if (commit) commits.push(commit);
         continue;
@@ -295,6 +386,16 @@ export class SentenceAccumulator {
     return this.snapshot();
   }
 
+  commitForcedChunks(now) {
+    const commits = [];
+    while (this.stableText) {
+      const split = forcedSplit(this.stableText, this.config);
+      const commit = this.commitThrough("forced", split?.end || this.stableText.length, now);
+      if (commit) commits.push(commit);
+    }
+    return commits;
+  }
+
   /** @param {number} [now] @param {{ force?: boolean }} [options] */
   advance(now = Date.now(), options = {}) {
     const commits = this.takeImmediateBoundaries(now);
@@ -306,14 +407,12 @@ export class SentenceAccumulator {
     }
     if (!this.stableText) return this.snapshot(commits);
     if (options.force) {
-      const commit = this.commitThrough("forced", this.stableText.length, now);
-      if (commit) commits.push(commit);
+      commits.push(...this.commitForcedChunks(now));
       return this.snapshot(commits);
     }
     const inactiveFor = now - this.lastStableAt;
     if (this.sentenceStartedAt && now - this.sentenceStartedAt >= this.config.maxDurationMs) {
-      const commit = this.commitThrough("forced", this.stableText.length, now);
-      if (commit) commits.push(commit);
+      commits.push(...this.commitForcedChunks(now));
     } else if (inactiveFor >= this.config.softSilenceMs) {
       const soft = safeSoftBoundary(this.stableText, this.config, true);
       if (soft) {
@@ -322,8 +421,7 @@ export class SentenceAccumulator {
       }
     }
     if (!commits.length && inactiveFor >= this.config.hardSilenceMs) {
-      const commit = this.commitThrough("grace", this.stableText.length, now);
-      if (commit) commits.push(commit);
+      commits.push(...this.commitForcedChunks(now));
     }
     if (commits.length) this.lastStableAt = now;
     return this.snapshot(commits);

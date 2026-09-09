@@ -44,7 +44,7 @@ test("literal punctuation, whitespace and Unicode do not corrupt offsets", () =>
   assert.deepEqual(marked(result.source), ["C++", "cell\nadhesion"]);
   assert.equal(result.source.map((token) => token.text).join(""), source);
 });
-test("paired sentence view keeps an incomplete source and its continuation in one unit", () => {
+test("legacy two-column grouping preserves per-segment annotation correspondence", () => {
   const segments = [
     { id: "one", sequence: 0, sourceText: "The extracellular matrix helps cells, and", translatedText: "细胞外基质帮助细胞，", sourceStatus: "final" },
     { id: "two", sequence: 1, sourceText: "it supports cell adhesion.", translatedText: "并支持细胞黏附。", sourceStatus: "final" },

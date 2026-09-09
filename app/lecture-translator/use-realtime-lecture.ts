@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { bestTranscript, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately, withoutCommittedPrefix } from "./browser-incremental.mjs";
-import { commonStablePrefix, DEFAULT_BOUNDARY_CONFIG, SentenceAccumulator, textAfterStablePrefix } from "./caption-stabilizer.mjs";
+import { bestTranscript, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately } from "./browser-incremental.mjs";
+import { commonStablePrefix, createSnapshotCursor, DEFAULT_BOUNDARY_CONFIG, SentenceAccumulator, splitReadingUnits, textAfterStablePrefix } from "./caption-stabilizer.mjs";
 import { createBoundedTranslationQueue, RealtimeCaptionNormalizer } from "./realtime-caption-state.mjs";
 import type { LectureState, ProviderPreference, RealtimeServerEvent } from "./types";
 
@@ -49,7 +49,8 @@ type FallbackCommit = {
 };
 type FallbackCaptionUpdate = { stableText: string; displayText: string; commits: Array<{ sourceText: string }> };
 type FallbackTranslationQueue = { enqueue(commit: FallbackCommit & { final?: boolean }): boolean; idle(): Promise<void> };
-type FallbackInterim = { previousText: string; stableText: string };
+type FallbackInterim = { id: string; previousText: string; stableText: string };
+type FallbackSnapshotCursor = ReturnType<typeof createSnapshotCursor>;
 type FallbackRow = { segmentId: string; sequence: number; startedAt: number; sourceText: string; sourceRevision: number; sourceStatus: "draft" | "final"; translationText: string; translationRevision: number; translationSourceText: string; translationSourceRevision: number; requestedSourceRevision: number; translationStatus: "idle" | "pending" | "draft" | "final" | "error" };
 
 const SAMPLE_RATE = 16_000;
@@ -89,8 +90,7 @@ export function useRealtimeLecture(options: Options) {
   const realtimeSessionRef = useRef("");
   const normalizerRef = useRef<RealtimeCaptionNormalizer | null>(null);
   const fallbackRowsRef = useRef(new Map<number, FallbackRow>());
-  const fallbackCommittedTextRef = useRef("");
-  const fallbackFinalIndexesRef = useRef(new Set<number>());
+  const fallbackFinalIndexesRef = useRef(new Map<number, { text: string; revision: number }>());
   const fallbackTranslationQueueRef = useRef<FallbackTranslationQueue | null>(null);
   const fallbackRestartRef = useRef<number | null>(null);
   const fallbackPauseTimerRef = useRef<number | null>(null);
@@ -99,7 +99,18 @@ export function useRealtimeLecture(options: Options) {
   const fallbackEpochRef = useRef(0);
   const fallbackRecognitionRunRef = useRef(0);
   const fallbackAccumulatorRef = useRef<SentenceAccumulator | null>(null);
-  const fallbackInterimRef = useRef<FallbackInterim>({ previousText: "", stableText: "" });
+  const fallbackInterimRef = useRef<FallbackInterim>({ id: "", previousText: "", stableText: "" });
+  const fallbackSnapshotCursorsRef = useRef(new Map<string, FallbackSnapshotCursor>());
+  const fallbackSnapshotIdRef = useRef("");
+
+  const fallbackSnapshotCursor = (id: string) => {
+    let cursor = fallbackSnapshotCursorsRef.current.get(id);
+    if (!cursor) {
+      cursor = createSnapshotCursor();
+      fallbackSnapshotCursorsRef.current.set(id, cursor);
+    }
+    return cursor;
+  };
 
   useEffect(() => {
     optionsRef.current = options;
@@ -262,8 +273,7 @@ export function useRealtimeLecture(options: Options) {
     }
     const row = fallbackRowsRef.current.get(commit.sequence);
     if (epoch !== fallbackEpochRef.current || !row || row.segmentId !== commit.segmentId) return;
-    const extendsRequest = row.sourceText === commit.sourceText || row.sourceText.startsWith(`${commit.sourceText} `);
-    if (!extendsRequest || row.translationSourceRevision > commit.sourceRevision) return;
+    if (row.sourceText !== commit.sourceText || row.sourceRevision !== commit.sourceRevision) return;
     if (translatedText) {
       if (row.translationText !== translatedText) row.translationRevision += 1;
       row.translationText = translatedText;
@@ -294,7 +304,7 @@ export function useRealtimeLecture(options: Options) {
       fallbackDraftFirstAtRef.current = 0;
       const sequence = fallbackSequenceRef.current;
       const row = fallbackRowsRef.current.get(sequence);
-      if (!row || row.sourceStatus !== "draft" || !row.sourceText || row.requestedSourceRevision === row.sourceRevision) return;
+      if (!row || row.sourceStatus !== "draft" || !row.sourceText || splitReadingUnits(row.sourceText).length > 1 || row.requestedSourceRevision === row.sourceRevision) return;
       row.requestedSourceRevision = row.sourceRevision;
       if (fallbackTranslationQueueRef.current?.enqueue({ sequence, startedAt: row.startedAt, sourceText: row.sourceText, segmentId: row.segmentId, sourceRevision: row.sourceRevision, requestId: `${row.segmentId}:${row.sourceRevision}`, epoch: fallbackEpochRef.current, final: false }) === false) row.requestedSourceRevision = 0;
     }, delay);
@@ -307,8 +317,18 @@ export function useRealtimeLecture(options: Options) {
       row = { segmentId: `${fallbackRunRef.current}:${sequence}`, sequence, startedAt, sourceText: "", sourceRevision: 0, sourceStatus, translationText: "", translationRevision: 0, translationSourceText: "", translationSourceRevision: 0, requestedSourceRevision: 0, translationStatus: "pending" };
       fallbackRowsRef.current.set(sequence, row);
     }
-    const sourceChanged = Boolean(sourceText && sourceText !== row.sourceText);
-    if (sourceChanged) { row.sourceText = sourceText; row.sourceRevision += 1; }
+    const sourceChanged = sourceText !== row.sourceText;
+    if (sourceChanged) {
+      row.sourceText = sourceText;
+      row.sourceRevision += 1;
+      // A Chinese draft belongs to its exact English request. Keeping it when
+      // ASR revises or shortens English creates a visibly mismatched pair.
+      if (row.translationText) row.translationRevision += 1;
+      row.translationText = "";
+      row.translationSourceText = "";
+      row.translationSourceRevision = 0;
+      row.requestedSourceRevision = 0;
+    }
     row.sourceStatus = sourceStatus;
     if (sourceChanged || !row.translationText) row.translationStatus = "pending";
     emit({ type: "segment.upsert", sessionId, segmentId: row.segmentId, sequence, startTime: row.startedAt, endTime: sourceStatus === "final" ? Date.now() : 0, sourceText: row.sourceText, sourceRevision: row.sourceRevision, sourceStatus: row.sourceStatus, translationText: row.translationText, translationRevision: row.translationRevision, translationStatus: row.translationStatus, provider: "qwen" });
@@ -320,7 +340,7 @@ export function useRealtimeLecture(options: Options) {
       const sequence = fallbackSequenceRef.current++;
       const startedAt = fallbackStartedAtRef.current || Date.now();
       const { row, sourceChanged } = publishFallbackRow(sequence, completed.sourceText, "final", startedAt);
-      fallbackCommittedTextRef.current = completed.sourceText;
+      fallbackSnapshotCursorsRef.current.get(fallbackSnapshotIdRef.current)?.consume(completed.sourceText);
       // A draft for the identical source becomes final in place; otherwise a
       // single final request supersedes queued draft work for this row.
       if (row.translationText && !sourceChanged && row.translationSourceText === row.sourceText) {
@@ -330,10 +350,18 @@ export function useRealtimeLecture(options: Options) {
       fallbackStartedAtRef.current = Date.now();
     }
     if (update.displayText) {
+      const draftUnits = splitReadingUnits(update.displayText);
       publishFallbackRow(fallbackSequenceRef.current, update.displayText, "draft", fallbackStartedAtRef.current || Date.now());
       // Stable source is shown immediately; this bounded, max-wait scheduler
       // turns it into a replaceable Chinese draft without per-token requests.
-      if (update.stableText) scheduleFallbackDraft();
+      if (update.stableText && draftUnits.length === 1) scheduleFallbackDraft();
+    } else {
+      // A correction or commit can consume the last visible draft. Explicitly
+      // clear that replaceable row so its old EN/ZH pair cannot linger.
+      const draft = fallbackRowsRef.current.get(fallbackSequenceRef.current);
+      if (draft?.sourceStatus === "draft" && draft.sourceText) {
+        publishFallbackRow(fallbackSequenceRef.current, "", "draft", draft.startedAt);
+      }
     }
   }, [emit, publishFallbackRow, queueFallbackCommit, scheduleFallbackDraft]);
 
@@ -375,16 +403,17 @@ export function useRealtimeLecture(options: Options) {
     fallbackStartedAtRef.current = Date.now();
     fallbackSessionRef.current = realtimeSessionRef.current || crypto.randomUUID();
     fallbackRunRef.current = `${fallbackSessionRef.current}:${crypto.randomUUID()}`;
-    fallbackFinalIndexesRef.current = new Set();
+    fallbackFinalIndexesRef.current = new Map();
     fallbackRowsRef.current = new Map();
-    fallbackCommittedTextRef.current = "";
     fallbackTranslationQueueRef.current = createBoundedTranslationQueue(translateFallbackCommit, { concurrency: 2, maxPending: 24 });
     fallbackEpochRef.current += 1;
     fallbackRecognitionRunRef.current = 0;
     clearFallbackPauseTimer();
     clearFallbackDraftTimer();
     fallbackAccumulatorRef.current = new SentenceAccumulator();
-    fallbackInterimRef.current = { previousText: "", stableText: "" };
+    fallbackInterimRef.current = { id: "", previousText: "", stableText: "" };
+    fallbackSnapshotCursorsRef.current = new Map();
+    fallbackSnapshotIdRef.current = "";
 
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
@@ -393,45 +422,65 @@ export function useRealtimeLecture(options: Options) {
     recognition.lang = "en-GB";
     recognition.onresult = (event) => {
       if (!shouldProcessBrowserResult({ fallbackActive: fallbackActiveRef.current, paused: pausedRef.current, intentionalClose: intentionalCloseRef.current })) return;
-      let interim = "";
-      let update: FallbackCaptionUpdate | undefined;
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
         const result = event.results[index];
         const text = bestTranscript(result);
         if (!text) continue;
+        const snapshotId = `${fallbackRecognitionRunRef.current}:${index}`;
+        // Web Speech can revise several result indices in one callback. Each
+        // index owns its own snapshot cursor; finish the preceding unfinished
+        // stream before switching ids so no tail is overwritten or charged to
+        // the wrong cursor.
+        if (fallbackInterimRef.current.id && fallbackInterimRef.current.id !== snapshotId) {
+          const flushed = fallbackAccumulatorRef.current?.advance(Date.now(), { force: true });
+          if (flushed) publishFallbackUpdate(flushed);
+          fallbackInterimRef.current = { id: "", previousText: "", stableText: "" };
+        }
         if (result.isFinal) {
-          if (fallbackFinalIndexesRef.current.has(index)) continue;
-          fallbackFinalIndexesRef.current.add(index);
-          const finalText = withoutCommittedPrefix(text, fallbackCommittedTextRef.current);
-          update = fallbackAccumulatorRef.current?.ingest({ id: `${fallbackRecognitionRunRef.current}:${index}`, text: finalText, isFinal: true }) ?? update;
-          fallbackInterimRef.current = { previousText: "", stableText: "" };
-          // A browser callback can contain several final units. Publish each
-          // accumulator result before the next one replaces `update`.
-          if (update) { publishFallbackUpdate(update); update = undefined; }
+          const priorFinal = fallbackFinalIndexesRef.current.get(index);
+          if (priorFinal?.text === text) continue;
+          const revision = (priorFinal?.revision || 0) + 1;
+          fallbackFinalIndexesRef.current.set(index, { text, revision });
+          fallbackSnapshotIdRef.current = snapshotId;
+          const finalText = fallbackSnapshotCursor(snapshotId).tail(text);
+          // A final is a revised snapshot of this result stream, not an
+          // append. Preserve committed units via the cursor, then replace the
+          // still-editable residual before asking the accumulator to flush any
+          // final punctuation.
+          fallbackAccumulatorRef.current?.replaceUncommitted(finalText, "");
+          const update = fallbackAccumulatorRef.current?.ingest({ id: `${snapshotId}:final:${revision}`, text: "", isFinal: true });
+          fallbackInterimRef.current = { id: "", previousText: "", stableText: "" };
+          if (update) publishFallbackUpdate(update);
+          // Browser finals are utterance boundaries. Flush any unpunctuated
+          // residual now, before another result index can replace it.
+          const flushed = fallbackAccumulatorRef.current?.advance(Date.now(), { force: true });
+          if (flushed) publishFallbackUpdate(flushed);
         } else {
-          interim = `${interim} ${text}`.trim();
+          const interim = fallbackSnapshotCursor(snapshotId).tail(text);
+          if (!interim) continue;
+          const previous = fallbackInterimRef.current;
+          fallbackSnapshotIdRef.current = snapshotId;
+          let update: FallbackCaptionUpdate | undefined;
+          if (previous.id !== snapshotId) {
+            fallbackInterimRef.current = { id: snapshotId, previousText: interim, stableText: "" };
+            update = fallbackAccumulatorRef.current?.replaceUncommitted("", interim);
+          } else {
+            const common = commonStablePrefix(previous.previousText, interim);
+            const stableWords = previous.stableText.split(" ").filter(Boolean);
+            const commonWords = common.split(" ").filter(Boolean);
+            const extendsStable = stableWords.every((word, wordIndex) => commonWords[wordIndex]?.toLowerCase().replace(/^\W+|\W+$/g, "") === word.toLowerCase().replace(/^\W+|\W+$/g, ""));
+            const stableText = extendsStable ? common : previous.stableText;
+            const stableIncrement = extendsStable ? commonWords.slice(stableWords.length).join(" ") : "";
+            fallbackInterimRef.current = { id: snapshotId, previousText: interim, stableText: extendsStable ? stableText : "" };
+            update = extendsStable
+              ? fallbackAccumulatorRef.current?.ingest({ id: `${snapshotId}:interim`, stableText: stableIncrement, tentativeText: textAfterStablePrefix(interim, stableText), isFinal: false })
+              : fallbackAccumulatorRef.current?.replaceUncommitted("", interim);
+          }
+          if (update) publishFallbackUpdate(update);
+          setState("SPEAKING");
+          scheduleFallbackPause();
         }
       }
-      if (interim) {
-        const previous = fallbackInterimRef.current;
-        const common = commonStablePrefix(previous.previousText, interim);
-        const stableWords = previous.stableText.split(" ").filter(Boolean);
-        const commonWords = common.split(" ").filter(Boolean);
-        const extendsStable = stableWords.every((word, index) => commonWords[index]?.toLowerCase().replace(/^\W+|\W+$/g, "") === word.toLowerCase().replace(/^\W+|\W+$/g, ""));
-        const stableText = extendsStable ? common : previous.stableText;
-        const stableIncrement = extendsStable ? commonWords.slice(stableWords.length).join(" ") : "";
-        if (!extendsStable) {
-          const revised = withoutCommittedPrefix(interim, fallbackCommittedTextRef.current);
-          fallbackInterimRef.current = { previousText: interim, stableText: "" };
-          update = fallbackAccumulatorRef.current?.replaceUncommitted("", revised) ?? update;
-        } else {
-          fallbackInterimRef.current = { previousText: interim, stableText };
-          update = fallbackAccumulatorRef.current?.ingest({ id: `${fallbackRecognitionRunRef.current}:interim`, stableText: stableIncrement, tentativeText: textAfterStablePrefix(interim, stableText), isFinal: false }) ?? update;
-        }
-        setState("SPEAKING");
-      }
-      if (update) publishFallbackUpdate(update);
-      if (interim || update?.stableText) scheduleFallbackPause();
     };
     recognition.onerror = (event) => {
       if (event.error === "aborted" || event.error === "no-speech") return;
@@ -442,7 +491,7 @@ export function useRealtimeLecture(options: Options) {
       // Browser engines commonly end and restart recognition between short
       // utterances. Keep the stable source alive through the grace window.
       scheduleFallbackPause(DEFAULT_BOUNDARY_CONFIG.resumeMergeMs);
-      fallbackFinalIndexesRef.current = new Set();
+      fallbackFinalIndexesRef.current = new Map();
       fallbackRecognitionRunRef.current += 1;
       fallbackRestartRef.current = window.setTimeout(() => {
         try { recognition.start(); } catch { /* already restarting */ }
@@ -565,8 +614,10 @@ export function useRealtimeLecture(options: Options) {
       fallbackEpochRef.current += 1;
       fallbackAccumulatorRef.current = new SentenceAccumulator();
       fallbackStartedAtRef.current = Date.now();
-      fallbackFinalIndexesRef.current = new Set();
-      fallbackInterimRef.current = { previousText: "", stableText: "" };
+      fallbackFinalIndexesRef.current = new Map();
+      fallbackInterimRef.current = { id: "", previousText: "", stableText: "" };
+      fallbackSnapshotCursorsRef.current = new Map();
+      fallbackSnapshotIdRef.current = "";
       try { speechRef.current?.start(); } catch { /* already active */ }
     }
     socketRef.current?.send(JSON.stringify({ type: "session.resume" }));
@@ -634,7 +685,7 @@ export function useRealtimeLecture(options: Options) {
     clearFallbackPauseTimer();
     clearFallbackDraftTimer();
     clearFallbackAccumulator();
-    fallbackInterimRef.current = { previousText: "", stableText: "" };
+    fallbackInterimRef.current = { id: "", previousText: "", stableText: "" };
     if (fallbackRestartRef.current !== null) window.clearTimeout(fallbackRestartRef.current);
     speechRef.current?.abort();
     cleanupSocket();

@@ -29,12 +29,14 @@ import { splitSentences } from "./live-display.mjs";
 import { effectiveViewport, targetDelta } from "./follow-geometry.mjs";
 import { assignParagraphId, groupParagraphs, migrateParagraphIds } from "./paragraph-grouping.mjs";
 import { buildGlossary, annotatePair } from "./paired-annotations.mjs";
+import { splitReadingUnits, createSentenceTranslationQueue } from "./caption-stabilizer.mjs";
 
 type Tab = "transcript" | "notes" | "terms" | "bookmarks";
 type AssistAction = "explain" | "simplify" | "example" | "term";
 
 const isDevelopment = process.env.NODE_ENV !== "production";
 const REPLAY_WORKSPACE_KEY = "paragraph-replay";
+const readingTranslationQueue = createSentenceTranslationQueue((run: () => Promise<void>) => run());
 const providerNames: Record<ProviderPreference, string> = { auto: "Auto", qwen: "Qwen", tencent: "Tencent" };
 const stateNames = {
   IDLE: "Ready",
@@ -277,6 +279,53 @@ const TranscriptParagraph = memo(function TranscriptParagraph({ paragraph, query
   </article>;
 });
 
+// Reading rows are translation units, never paragraph groups. Old oversized
+// records retain their original text; each short source gets its own translation.
+const PairedSegment = memo(function PairedSegment({ segment, terminology, replay, onPair, ...props }: Omit<ComponentProps<typeof PairedParagraph>, "paragraph"> & {
+  segment: TranscriptSegment; terminology: Record<string, string>; replay: boolean;
+  onPair(id: string, source: string, translation: string, index: number, target: string): void;
+}) {
+  const units = useMemo(() => splitReadingUnits(segment.sourceText), [segment.sourceText]);
+  const [failed, setFailed] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const { id, sessionId, sourceText, translatedText, sourceStatus } = segment;
+  const cache = segment.readingPairs?.source === sourceText && segment.readingPairs.translation === translatedText ? segment.readingPairs.units : undefined;
+  const cachedRef = useRef(cache);
+  cachedRef.current = cache;
+  useEffect(() => {
+    if (units.length < 2 || sourceStatus === "draft" || replay) return;
+    let cancelled = false;
+    setFailed(false);
+    void readingTranslationQueue.enqueue(async () => {
+      for (let index = 0; index < units.length; index += 1) {
+        if (cancelled) return;
+        if (cachedRef.current?.[index]?.translatedText) continue;
+        const response = await fetch("/api/translate", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ lectureId: sessionId, sessionId, segmentId: `${id}:reading:${index}`, text: units[index], terminology, quality: "accurate" }),
+          signal: AbortSignal.timeout(30_000),
+        });
+        const result = await response.json() as { translation?: string };
+        if (!response.ok || !result.translation) throw new Error("Reading translation unavailable");
+        if (!cancelled) onPair(id, sourceText, translatedText, index, result.translation);
+      }
+    }).catch(() => { if (!cancelled) setFailed(true); });
+    return () => { cancelled = true; };
+  }, [id, sessionId, sourceText, translatedText, sourceStatus, units, terminology, replay, onPair, retry]);
+  if (props.editingId === id) return <PairedParagraph {...props} paragraph={{ id, segments: [segment] }} />;
+  return <>
+    {units.map((source, index) => {
+      const rowId = index === units.length - 1 ? id : `${id}:reading:${index}`;
+      const row: TranscriptSegment = { ...segment, id: rowId, sourceText: source,
+        translatedText: units.length === 1 ? translatedText : cache?.[index]?.translatedText || "",
+        translationStatus: units.length === 1 ? segment.translationStatus : cache?.[index]?.translatedText ? "final" : failed ? "error" : "pending" };
+      return <PairedParagraph {...props} key={rowId} paragraph={{ id: rowId, segments: [row] }}
+        onBookmark={() => props.onBookmark(id)} onEdit={(value) => props.onEdit(value ? id : "")} />;
+    })}
+    {failed ? <button type="button" onClick={() => setRetry((value) => value + 1)}>重试本段逐句翻译</button> : null}
+  </>;
+});
+
 function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUser; replay?: boolean }) {
   const [workspace, setWorkspace] = useState<Workspace>(() => seedWorkspace());
   const [hydrated, setHydrated] = useState(false);
@@ -322,6 +371,15 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
     setWorkspace((current) => ({ ...current, sessions: current.sessions.map((session) => session.id === sessionId ? updater(session) : session) }));
   }, []);
 
+  const saveReadingPair = useCallback((id: string, source: string, translation: string, index: number, target: string) => {
+    updateSession(activeIdRef.current, (session) => ({ ...session, segments: session.segments.map((segment) => {
+      if (segment.id !== id || segment.sourceText !== source || segment.translatedText !== translation) return segment;
+      const previous = segment.readingPairs?.source === source && segment.readingPairs.translation === translation ? segment.readingPairs.units : [];
+      const units = splitReadingUnits(source).map((sourceText, i) => ({ sourceText, translatedText: i === index ? target : previous[i]?.translatedText || "" }));
+      return { ...segment, readingPairs: { source, translation, units } };
+    }) }));
+  }, [updateSession]);
+
   const refineSegment = useCallback(async (sessionId: string, segment: TranscriptSegment) => {
     const current = workspaceRef.current;
     if (!current.settings.refinement || !segment.sourceText) return;
@@ -365,7 +423,8 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
           startTime: toSeconds(incoming.startTime, existing.startTime),
           endTime: toSeconds(incoming.endTime, existing.endTime),
           sourceText: sourceFresh ? incoming.sourceText ?? existing.sourceText : existing.sourceText,
-          translatedText: translationFresh && incoming.translationText ? incoming.translationText : existing.translatedText,
+          translatedText: sourceFresh && translationFresh && incoming.translationText !== undefined ? incoming.translationText
+            : sourceFresh && incoming.sourceText !== undefined && incoming.sourceText !== existing.sourceText ? "" : existing.translatedText,
           provider: incoming.provider ?? existing.provider,
           speaker: incoming.speaker ?? existing.speaker,
           isFinal: incoming.sourceStatus === "final" ? true : existing.isFinal,
@@ -418,8 +477,30 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
     }
   }, [refineSegment, updateSession]);
 
-  const replayFixture = useCallback((kind: "next" | "late" | "run") => {
+  const replayFixture = useCallback((kind: "next" | "late" | "run" | "hardware") => {
     if (!replay) return;
+    if (kind === "hardware") {
+      const session = newSession("hardware-replay");
+      const pairs = [
+        ["hello and welcome back to hardware architecture", "大家好，欢迎回到硬件体系结构课程。"],
+        ["now you might ask you know why do I tell you about hardware architecture", "你可能会问：为什么要给你们讲硬件体系结构？"],
+        ["you're probably not going to build any hardware", "你们大概不会亲手构建硬件。"],
+        ["although it's fun stuff to do", "尽管这件事挺有趣。"],
+        ["and if you're going to become a computer scientist", "而如果你打算成为一名计算机科学家，"],
+        ["most of you won't want to build hardware", "你们中的大多数人也不会想去做硬件。"],
+      ];
+      session.terminology = { "hardware architecture": "硬件体系结构", "computer scientist": "计算机科学家" };
+      session.segments = pairs.map(([sourceText, translatedText], index) => ({
+        id: `${session.id}:${index}`, paragraphId: "same-unpunctuated-paragraph", sessionId: session.id, sequence: index,
+        startTime: index * 4, endTime: index * 4 + 4, sourceText, translatedText,
+        sourceLanguage: "en", targetLanguage: "zh", provider: "qwen", speaker: "Lecturer", confidence: null,
+        isFinal: true, sourceStatus: "final", translationStatus: "final", createdAt: session.date, bookmarked: false, refinementState: "idle",
+      }));
+      setWorkspace((current) => ({ ...current, sessions: [session], activeSessionId: session.id, settings: { ...current.settings, transcriptView: "paired" } }));
+      setPartial({ source: "", translation: "", sequence: 0 });
+      setLatestAnchorId(null);
+      return;
+    }
     if (kind === "run") {
       const replaySession = newSession("paragraph-replay", "2000-01-01T12:00:00.000Z");
       setWorkspace((current) => ({ ...current, sessions: [replaySession], activeSessionId: replaySession.id }));
@@ -765,7 +846,12 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
   } satisfies TranscriptSegment) : null, [hasLiveContent, partial, activeSession.id, activeSession.segments, activeProvider]);
   // The provisional tail goes through the same source-sentence grouping as
   // saved rows; it must not be unconditionally appended to the last paragraph.
-  const paragraphs = useMemo(() => groupParagraphs([...activeSession.segments, ...(liveSegment ? [liveSegment] : [])]), [activeSession.segments, liveSegment]);
+  const paragraphs = useMemo(() => {
+    const segments = [...activeSession.segments, ...(liveSegment ? [liveSegment] : [])];
+    return transcriptView === "paired"
+      ? segments.map((segment) => ({ id: segment.id, segments: [segment] }))
+      : groupParagraphs(segments);
+  }, [activeSession.segments, liveSegment, transcriptView]);
   const filteredParagraphs = useMemo(() => paragraphs.filter((paragraph) => paragraph.segments.some((segment) => {
     if (tab === "bookmarks" && !segment.bookmarked) return false;
     return !query || `${segment.sourceText} ${segment.translatedText}`.toLowerCase().includes(query.toLowerCase());
@@ -916,7 +1002,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
           {(orderedParagraphs.length || tab === "bookmarks") ? <div ref={transcriptRef} className={styles.transcriptStream} tabIndex={0} onWheel={suspendFollow} onTouchMove={suspendFollow} onKeyDown={(event) => { if (["ArrowUp", "PageUp", "Home", "ArrowDown", "PageDown", "End"].includes(event.key)) suspendFollow(); }} onScroll={() => { if (!autoFollowing) requestAnimationFrame(captureManualAnchor); }}>
             <div className={`${styles.columnTitle} ${transcriptView === "paired" ? styles.pairedTitle : ""}`}>{transcriptView === "paired" ? <span>English → 中文 · 中英逐句对照</span> : <><span>English</span><span>中文</span></>}</div>
             <div className={styles.transcriptRunway} aria-hidden="true" />
-            {transcriptView === "paired" ? orderedParagraphs.map((paragraph) => <PairedParagraph key={paragraph.id} paragraph={paragraph} glossary={glossary} query={query} editingId={editingId} activeId={latestSourceRow?.id || null} rowRef={(element) => { activeRowRef.current = element; }} onInspect={suspendFollow} onBookmark={bookmark} onAsk={(item) => { suspendFollow(); askAI(item); }} onEdit={(id) => { suspendFollow(); setEditingId(id); }} onSaveEdit={saveEdit} />)
+            {transcriptView === "paired" ? visibleSegments.map((segment) => <PairedSegment key={segment.id} segment={segment} terminology={activeSession.terminology} replay={replay} onPair={saveReadingPair} glossary={glossary} query={query} editingId={editingId} activeId={latestSourceRow?.id || null} rowRef={(element) => { activeRowRef.current = element; }} onInspect={suspendFollow} onBookmark={bookmark} onAsk={(item) => { suspendFollow(); askAI(item); }} onEdit={(id) => { suspendFollow(); setEditingId(id); }} onSaveEdit={saveEdit} />)
               : orderedParagraphs.map((paragraph) => <TranscriptParagraph key={paragraph.id} paragraph={paragraph} live={paragraph.segments.some((segment) => segment.id === liveSegment?.id)} query={query} editingId={editingId} activeId={latestSourceRow?.id || null} rowRef={(element) => { activeRowRef.current = element; }} onBookmark={bookmark} onAsk={askAI} onEdit={setEditingId} onSaveEdit={saveEdit} />)}
             {tab === "bookmarks" && !filteredSegments.length ? <div className={styles.emptySmall}><Icon name="bookmark" /><p>No bookmarks yet.</p></div> : null}
             <div className={styles.transcriptRunway} aria-hidden="true" />
@@ -937,7 +1023,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
         event.currentTarget.style.setProperty("--glass-x", `${event.clientX - rect.left}px`);
         event.currentTarget.style.setProperty("--glass-y", `${event.clientY - rect.top}px`);
       }}>
-        {replay ? <div className={styles.replayControls} data-replay-step={replayStep}><span>Paragraph replay</span><button onClick={() => replayFixture("run")}>Run paragraph replay</button><button onClick={() => replayFixture("next")}>Next replay event</button><button onClick={() => replayFixture("late")}>Late translation</button><button onClick={() => void saveReplay()}>Save replay</button><button onClick={() => void reloadReplay()}>Reload replay</button></div> : null}
+        {replay ? <div className={styles.replayControls} data-replay-step={replayStep}><span>Paragraph replay</span><button onClick={() => replayFixture("hardware")}>Hardware pairing replay</button><button onClick={() => replayFixture("run")}>Run paragraph replay</button><button onClick={() => replayFixture("next")}>Next replay event</button><button onClick={() => replayFixture("late")}>Late translation</button><button onClick={() => void saveReplay()}>Save replay</button><button onClick={() => void reloadReplay()}>Reload replay</button></div> : null}
         {!isRecording ? <button className={styles.primaryControl} onClick={startLecture}><span><Icon name="mic" /></span> Start lecture</button> : <>
           <div className={styles.recordingStatus}><i /><span>{activeSession.status === "paused" ? "Paused" : `${stateNames[realtime.state]} · ${formatTime(elapsed)}`}</span></div>
           <AudioBars level={realtime.level} />

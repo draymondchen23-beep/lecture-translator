@@ -21,6 +21,7 @@ export type TranscriptSegment = {
   endTime: number;
   sourceText: string;
   translatedText: string;
+  readingPairs?: { source: string; translation: string; units: Array<{ sourceText: string; translatedText: string }> };
   sourceLanguage: string;
   targetLanguage: string;
   provider: ActiveProvider;

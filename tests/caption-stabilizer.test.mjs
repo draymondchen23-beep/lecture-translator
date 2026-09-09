@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { commonStablePrefix, createSentenceTranslationQueue, DEFAULT_BOUNDARY_CONFIG, findSentenceBoundaries, normalizeCaptionSnapshot, SentenceAccumulator, textAfterStablePrefix } from "../app/lecture-translator/caption-stabilizer.mjs";
+import { commonStablePrefix, createSentenceTranslationQueue, createSnapshotCursor, DEFAULT_BOUNDARY_CONFIG, findSentenceBoundaries, normalizeCaptionSnapshot, SentenceAccumulator, splitReadingUnits, textAfterStablePrefix } from "../app/lecture-translator/caption-stabilizer.mjs";
 import { withoutCommittedPrefix } from "../app/lecture-translator/browser-incremental.mjs";
 
 test("normalizes browser-style snapshots without inventing an id", () => {
@@ -92,6 +92,84 @@ test("forced boundaries cap unpunctuated caption growth", () => {
   const update = captions.ingest({ id: "0", text: "one two three four five six seven", isFinal: true }, 0);
   assert.deepEqual(update.commits.map((item) => [item.sourceText, item.boundary]), [["one two three four five", "forced"]]);
   assert.equal(update.displayText, "six seven");
+});
+
+test("unpunctuated lecture snapshots become bounded paired reading units without loss", () => {
+  const source = "hello and welcome back to hardware architecture now you might ask you know why do I tell you about hardware architecture you are probably not going to build any hardware although it is fun stuff to do";
+  const units = splitReadingUnits(source);
+  assert.deepEqual(units.join(" "), source);
+  assert.ok(units.length > 1);
+  assert.ok(units.every((unit) => unit.split(" ").length <= 18 && unit.length <= 120));
+});
+
+test("reading units respect bounds around punctuation and split short sentences", () => {
+  const short = "First sentence is short. Second sentence is short.";
+  assert.deepEqual(splitReadingUnits(short), ["First sentence is short.", "Second sentence is short."]);
+  const source = `${Array.from({ length: 20 }, (_, index) => `word${index + 1}`).join(" ")}, ${Array.from({ length: 20 }, (_, index) => `word${index + 21}`).join(" ")}.`;
+  const units = splitReadingUnits(source);
+  assert.equal(units.join(" "), source);
+  assert.ok(units.every((unit) => unit.split(" ").length <= 18 && unit.length <= 120));
+
+  const longToken = "x".repeat(130);
+  assert.deepEqual(splitReadingUnits(`${longToken} tail`), [longToken, "tail"]);
+});
+
+test("snapshot cursor ignores corrections to an emitted prefix without losing the live tail", () => {
+  const cursor = createSnapshotCursor();
+  const first = "hello and welcome back to hardware architecture now you might ask why do I tell you about hardware architecture today";
+  const accumulator = new SentenceAccumulator();
+  const initial = accumulator.ingest({ id: "run:interim", stableText: cursor.tail(first), isFinal: false }, 0);
+  const committed = initial.commits.map((item) => item.sourceText);
+  assert.ok(committed.length >= 1);
+  assert.ok(committed.every((item) => item.split(" ").length <= 18));
+  committed.forEach((item) => cursor.consume(item));
+
+  // The recognizer later revises "and" to "&" in its already-translated
+  // prefix. Its new words must still start at the same snapshot cursor.
+  const corrected = "hello & welcome back to hardware architecture now you might ask why do I tell you about hardware architecture today and tomorrow";
+  const tail = cursor.tail(corrected);
+  assert.equal(tail, corrected.split(" ").slice(cursor.consumedWords).join(" "));
+  const update = accumulator.replaceUncommitted("", tail, 1);
+  assert.equal(update.displayText, tail);
+  assert.ok(!update.displayText.includes("hello"));
+});
+
+test("a revised final for the same stream only contributes its unconsumed tail", () => {
+  const cursor = createSnapshotCursor();
+  const accumulator = new SentenceAccumulator();
+  const initial = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen";
+  const first = accumulator.ingest({ id: "0:0:interim", stableText: initial, isFinal: false }, 0);
+  first.commits.forEach((item) => cursor.consume(item.sourceText));
+  const revisedFinal = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen corrected nineteen twenty";
+  accumulator.replaceUncommitted(cursor.tail(revisedFinal), "", 1);
+  const final = accumulator.ingest({ id: "0:0:final:2", text: "", isFinal: true }, 1);
+  assert.deepEqual(final.commits.map((item) => item.sourceText), []);
+  assert.equal(final.displayText, "corrected nineteen twenty");
+});
+
+test("forced and age flushes split a long tentative tail into bounded commits", () => {
+  const source = Array.from({ length: 40 }, (_, index) => `word${index + 1}`).join(" ");
+  const captions = new SentenceAccumulator();
+  captions.ingest({ id: "tail", tentativeText: source, isFinal: false }, 0);
+  const forced = captions.advance(1, { force: true });
+  assert.equal(forced.commits.map((item) => item.sourceText).join(" "), source);
+  assert.ok(forced.commits.every((item) => item.sourceText.split(" ").length <= 18 && item.sourceText.length <= 120));
+
+  const aged = new SentenceAccumulator({ maxDurationMs: 1 });
+  const initialAge = aged.ingest({ id: "age", stableText: source, isFinal: false }, 1);
+  const update = aged.advance(2);
+  const ageCommits = [...initialAge.commits, ...update.commits];
+  assert.equal(ageCommits.map((item) => item.sourceText).join(" "), source);
+  assert.ok(ageCommits.every((item) => item.sourceText.split(" ").length <= 18 && item.sourceText.length <= 120));
+});
+
+test("separate recognizer cursors preserve genuine repeated words", () => {
+  const firstUtterance = createSnapshotCursor();
+  firstUtterance.consume("yes");
+  assert.equal(firstUtterance.tail("yes indeed"), "indeed");
+
+  const nextUtterance = createSnapshotCursor();
+  assert.equal(nextUtterance.tail("yes yes that is correct"), "yes yes that is correct");
 });
 
 test("forced stop retains a tentative tail", () => {
