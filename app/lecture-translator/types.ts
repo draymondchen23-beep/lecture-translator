@@ -87,6 +87,7 @@ export type WorkspaceSettings = {
   refinement: boolean;
   vad: boolean;
   autoScroll: boolean;
+  transcriptView?: "columns" | "paired";
   autoNotes: boolean;
   noteDetail: "concise" | "standard" | "detailed";
   saveAudio: boolean;

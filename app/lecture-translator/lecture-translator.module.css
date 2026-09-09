@@ -286,6 +286,41 @@
 
 .paragraph { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; margin-block: 0 16px; padding: 0 20px; }
 .paragraphColumn { min-width: 0; }
+.readingToolbar { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.viewSwitch { display: inline-flex; padding: 3px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); }
+.viewSwitch button { min-height: 36px; padding: 6px 14px; border-radius: 7px; color: var(--text-2); background: transparent; font-size: 14px; }
+.viewSwitch button[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+.viewSwitch button:hover { color: var(--text); }
+.viewSwitch button:disabled { cursor: not-allowed; opacity: .6; }
+.viewSwitch button:focus-visible, .annotation:focus-visible, .annotationClose:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.readingLegend { display: flex; flex-wrap: wrap; gap: 12px; color: var(--text-2); font-size: 12px; }
+.termLegend { color: var(--accent); background: var(--accent-soft); }
+.idiomLegend { text-decoration: underline 2px #bd8d40; text-underline-offset: 4px; }
+.pairedTitle { display: block; color: var(--text-2); font-size: 12px; letter-spacing: 0; text-transform: none; }
+.pairedParagraph { padding: 0 20px; margin: 0 0 20px; }
+.pairedUnit { padding: 18px 0; border-bottom: 1px solid var(--border); }
+.pairedActive { background: var(--accent-soft); border-radius: 12px; padding: 18px 14px; margin-inline: -14px; }
+.pairedUnit .segmentInline { display: block; }
+.pairedUnit .activeSegment { color: var(--text); }
+.pairedTranslation { margin-top: 7px; color: var(--text-2); font-size: 16px; line-height: 1.75; overflow-wrap: anywhere; }
+.pairedUnit .segmentActions { left: auto; right: 0; top: -28px; }
+.app .annotation { display: inline; padding: 0 1px; font: inherit; line-height: inherit; color: inherit; border-radius: 3px; box-decoration-break: clone; -webkit-box-decoration-break: clone; }
+.app .academicTerm { color: var(--accent); background: var(--accent-soft); }
+.app .culturalExpression { background: transparent; text-decoration: underline 2px #bd8d40; text-underline-offset: 4px; }
+.app .annotationSelected { outline: 1px solid currentColor; outline-offset: 1px; background: var(--accent-soft); }
+.annotationNote { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--surface); font-size: 14px; line-height: 1.65; color: var(--text); }
+.annotationNote p { margin: 5px 0; }
+.annotationNote small { display: block; font-size: 12px; color: var(--text-2); }
+.annotationClose { background: transparent; padding: 8px 0 0; color: var(--accent); font-size: 14px; }
+.pairedUnit .inlineEdit textarea { display: block; width: 100%; min-height: 80px; margin-bottom: 8px; padding: 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; }
+@media (max-width: 760px) {
+  .pairedParagraph { padding: 0 16px; }
+  .pairedActive { padding-inline: 10px; margin-inline: -10px; }
+  .readingToolbar { gap: 8px; }
+  .viewSwitch button { min-height: 40px; }
+  .pairedUnit .segmentActions { position: static; display: flex; justify-content: flex-end; width: fit-content; margin: 4px 0 0 auto; opacity: 1; pointer-events: auto; }
+  .pairedUnit .segmentActions button { width: 36px; height: 36px; }
+}
 .paragraphColumn + .paragraphColumn { padding-left: 24px; border-left: 1px solid var(--border); }
 .segmentInline, .translationOnly { position: relative; display: inline; }
 .activeSegment { color: color-mix(in srgb, var(--accent) 78%, var(--text)); }

@@ -7,6 +7,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
+  type ReactNode,
 } from "react";
 import styles from "./lecture-translator.module.css";
 import { clearWorkspaceData, deleteLectureData, loadLectureAudio, loadWorkspace, saveLectureAudio, saveWorkspace } from "./storage";
@@ -26,6 +28,7 @@ import { AuthPanel, type SignedInUser } from "./auth-panel";
 import { splitSentences } from "./live-display.mjs";
 import { effectiveViewport, targetDelta } from "./follow-geometry.mjs";
 import { assignParagraphId, groupParagraphs, migrateParagraphIds } from "./paragraph-grouping.mjs";
+import { buildGlossary, annotatePair } from "./paired-annotations.mjs";
 
 type Tab = "transcript" | "notes" | "terms" | "bookmarks";
 type AssistAction = "explain" | "simplify" | "example" | "term";
@@ -204,9 +207,10 @@ function Icon({ name }: { name: "menu" | "plus" | "search" | "settings" | "copy"
   return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">{paths[name]}</svg>;
 }
 
-const SegmentInline = memo(function SegmentInline({ segment, query, editing, active, live, rowRef, onBookmark, onAsk, onEdit, onSaveEdit }: {
+const SegmentInline = memo(function SegmentInline({ segment, query, editing, active, live, rowRef, sourceContent, onBookmark, onAsk, onEdit, onSaveEdit }: {
   segment: TranscriptSegment; query: string; editing: boolean; active: boolean; live?: boolean;
   rowRef?: (element: HTMLElement | null) => void;
+  sourceContent?: ReactNode;
   onBookmark(id: string): void; onAsk(segment: TranscriptSegment): void; onEdit(id: string): void; onSaveEdit(id: string, source: string, translation: string): void;
 }) {
   const [source, setSource] = useState(segment.sourceText);
@@ -220,7 +224,7 @@ const SegmentInline = memo(function SegmentInline({ segment, query, editing, act
         <div className={styles.editActions}><button onClick={() => onSaveEdit(segment.id, source, translation)}>Save</button><button onClick={() => onEdit("")}>Cancel</button></div>
     </span>;
   return <span ref={rowRef} className={`${styles.segmentInline} ${active ? styles.activeSegment : ""} ${live || sourceStatus === "draft" ? styles.draftSegment : ""} ${highlighted ? styles.searchMatch : ""}`} id={`segment-${segment.id}`} data-segment-id={segment.id}>
-    <span className={styles.sourceText}>{segment.sourceText || <span className={styles.muted}>Listening…</span>}{live ? <i className={styles.cursor} /> : null}</span>{" "}
+    <span className={styles.sourceText} lang="en">{sourceContent ?? (segment.sourceText || <span className={styles.muted}>Listening…</span>)}{live ? <i className={styles.cursor} /> : null}</span>{" "}
     {!live ? <span className={styles.segmentActions} aria-label="Transcript actions">
       <button title="Copy" onClick={() => navigator.clipboard.writeText(`${segment.sourceText}\n${segment.translatedText}`)}><Icon name="copy" /></button>
       <button title="Bookmark" className={segment.bookmarked ? styles.actionActive : ""} onClick={() => onBookmark(segment.id)}><Icon name="bookmark" /></button>
@@ -228,6 +232,37 @@ const SegmentInline = memo(function SegmentInline({ segment, query, editing, act
       <button title="Edit" onClick={() => onEdit(segment.id)}><Icon name="edit" /></button>
     </span> : null}
   </span>;
+});
+
+const PairedSegment = memo(function PairedSegment({ glossary, onInspect, ...props }: ComponentProps<typeof SegmentInline> & {
+  glossary: ReturnType<typeof buildGlossary>; onInspect(): void;
+}) {
+  const { segment, editing, active, live } = props;
+  const annotations = useMemo(() => annotatePair(segment.sourceText, segment.translatedText, glossary), [segment.sourceText, segment.translatedText, glossary]);
+  const [selection, setSelection] = useState<{ id: string; source: string; translation: string } | null>(null);
+  const selected = selection?.source === segment.sourceText && selection.translation === segment.translatedText
+    ? annotations.entries.find((entry) => entry.id === selection.id) : undefined;
+  const renderText = (tokens: typeof annotations.source) => tokens.map((token, index) => {
+    const entry = token.id ? annotations.entries.find((item) => item.id === token.id) : undefined;
+    return entry ? <button key={`${entry.id}:${index}`} type="button"
+      className={`${styles.annotation} ${entry.kind === "term" ? styles.academicTerm : styles.culturalExpression} ${selected?.id === entry.id ? styles.annotationSelected : ""}`}
+      aria-pressed={selected?.id === entry.id} aria-label={`${token.text}：查看${entry.kind === "term" ? "术语" : "表达"}解释`}
+      onClick={() => { onInspect(); setSelection(selected?.id === entry.id ? null : { id: entry.id, source: segment.sourceText, translation: segment.translatedText }); }}
+    >{token.text}</button> : <span key={index}>{token.text}</span>;
+  });
+  return <section className={`${styles.pairedUnit} ${active ? styles.pairedActive : ""}`} data-paired-unit={segment.id}>
+    <SegmentInline {...props} sourceContent={segment.sourceText ? renderText(annotations.source) : undefined} />
+    {!editing ? <div lang="zh-CN" className={`${styles.pairedTranslation} ${segment.translationStatus === "draft" || segment.translationStatus === "pending" ? styles.translationDraft : ""}`} data-segment-id={`${segment.id}-translation`}>
+      {segment.translatedText ? renderText(annotations.translation) : <span className={styles.muted}>{segment.translationStatus === "error" ? "本句翻译暂不可用" : "等待本句译文…"}</span>}
+    </div> : null}
+    {selected && !editing ? <aside className={styles.annotationNote} aria-label="词语解释" onKeyDown={(event) => { if (event.key === "Escape") { setSelection(null); } }}>
+      <strong>{selected.english} · {selected.chinese}</strong>
+      <p>{selected.explanation || "本课程术语对应。可通过 Ask AI 查看这句话中的具体含义。"}</p>
+      {selected.kind === "idiom" ? <small>常见表达释义，具体语气需结合上下文。</small> : null}
+      <button type="button" className={styles.annotationClose} aria-label="收起解释" onClick={() => setSelection(null)}>收起</button>
+    </aside> : null}
+    {live ? <span className={styles.srOnly}>实时片段</span> : null}
+  </section>;
 });
 
 const TranscriptParagraph = memo(function TranscriptParagraph({ paragraph, query, editingId, activeId, live, rowRef, onBookmark, onAsk, onEdit, onSaveEdit }: {
@@ -276,6 +311,8 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
   const finalSegmentGateRef = useRef(createFinalSegmentGate());
 
   const activeSession = workspace.sessions.find((session) => session.id === workspace.activeSessionId) || workspace.sessions[0];
+  const transcriptView = workspace.settings.transcriptView === "paired" ? "paired" : "columns";
+  const glossary = useMemo(() => buildGlossary(activeSession.terminology, activeSession.notes?.terminology), [activeSession.terminology, activeSession.notes?.terminology]);
   activeIdRef.current = activeSession.id;
   workspaceRef.current = workspace;
 
@@ -741,7 +778,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
     const sourceRect = row.getBoundingClientRect();
     const translation = row.dataset.segmentId ? container.querySelector<HTMLElement>(`[data-segment-id="${CSS.escape(row.dataset.segmentId)}-translation"]`) : null;
     const translationRect = translation?.getBoundingClientRect();
-    const paragraph = row.closest<HTMLElement>("[data-paragraph-id]");
+    const paragraph = row.closest<HTMLElement>("[data-paired-unit], [data-paragraph-id]");
     const paragraphRect = paragraph?.getBoundingClientRect();
     const combinedRect = translationRect ? {
       top: Math.min(sourceRect.top, translationRect.top), bottom: Math.max(sourceRect.bottom, translationRect.bottom),
@@ -757,7 +794,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
     if (Math.abs(delta) < 18) return;
     const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     container.scrollBy({ top: delta, behavior: behavior === "auto" || reduced ? "instant" : behavior });
-  }, [autoFollowing]);
+  }, [autoFollowing, transcriptView]);
   const centerFrameRef = useRef<number | null>(null);
   const captureManualAnchor = useCallback(() => {
     const container = transcriptRef.current;
@@ -807,6 +844,13 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
     return () => observer.disconnect();
   }, [autoFollowing, centerActiveRow, orderedParagraphs.length, tab]);
   const suspendFollow = useCallback(() => { captureManualAnchor(); setAutoFollowing(false); }, [captureManualAnchor]);
+  useEffect(() => {
+    if (autoFollowing || !manualAnchorRef.current) return;
+    const container = transcriptRef.current;
+    const anchor = manualAnchorRef.current;
+    const row = container?.querySelector<HTMLElement>(`[data-segment-id="${CSS.escape(anchor.id)}"]`);
+    if (container && row) container.scrollTop += row.getBoundingClientRect().top - anchor.top;
+  }, [transcriptView, autoFollowing]);
   return <div className={`${styles.app} ${sidebarCollapsed ? styles.appSidebarCollapsed : ""}`}>
     <iframe className={styles.brandOrbsBackground} src="/backgrounds/brand-orbs-codex.html" title="" aria-hidden="true" tabIndex={-1} />
     <button className={styles.mobileMenu} onClick={() => setSidebarOpen(true)} aria-label="Open lecture history"><Icon name="menu" /></button>
@@ -852,12 +896,20 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
 
       <div className={`${styles.content} ${tab === "transcript" || tab === "bookmarks" ? styles.transcriptOnlyContent : ""}`}>
         {tab === "transcript" || tab === "bookmarks" ? <div className={styles.transcript}>
+          <div className={styles.readingToolbar}>
+            <div className={styles.viewSwitch} role="group" aria-label="讲稿阅读方式">
+              {(["columns", "paired"] as const).map((view) => <button key={view} type="button" disabled={Boolean(editingId)} title={editingId ? "请先保存或取消编辑" : undefined} aria-pressed={transcriptView === view} onClick={() => { if (view === transcriptView) return; captureManualAnchor(); setSetting("transcriptView", view); }}>{view === "columns" ? "两栏" : "逐句对照"}</button>)}
+            </div>
+            {transcriptView === "paired" ? <div className={styles.readingLegend}><span className={styles.termLegend}>学术术语</span><span className={styles.idiomLegend}>口语表达</span><span>点词查看解释</span></div> : null}
+          </div>
           {!activeSession.segments.length && !partial.source ? <div className={styles.emptyState}><h2>Start a lecture</h2><p>Live transcription, translation and AI notes.</p>{providerStatusLoaded && !providerStatus.qwen && !providerStatus.tencent ? <div className={styles.setupNotice}><strong>Translation setup required</strong><span>Qwen and Tencent are not configured on this server.</span><button onClick={() => setSettingsOpen(true)}>View API status</button></div> : null}<button onClick={startLecture}><Icon name="mic" /> Start lecture</button></div> : null}
           {!showOlder && filteredParagraphs.length > 500 ? <button className={styles.loadOlder} onClick={() => setShowOlder(true)}>Show {filteredParagraphs.length - 500} older paragraphs</button> : null}
           {(orderedParagraphs.length || tab === "bookmarks") ? <div ref={transcriptRef} className={styles.transcriptStream} tabIndex={0} onWheel={suspendFollow} onTouchMove={suspendFollow} onKeyDown={(event) => { if (["ArrowUp", "PageUp", "Home", "ArrowDown", "PageDown", "End"].includes(event.key)) suspendFollow(); }} onScroll={() => { if (!autoFollowing) requestAnimationFrame(captureManualAnchor); }}>
-            <div className={styles.columnTitle}><span>English</span><span>中文</span></div>
+            <div className={`${styles.columnTitle} ${transcriptView === "paired" ? styles.pairedTitle : ""}`}>{transcriptView === "paired" ? <span>English → 中文 · 中英逐句对照</span> : <><span>English</span><span>中文</span></>}</div>
             <div className={styles.transcriptRunway} aria-hidden="true" />
-            {orderedParagraphs.map((paragraph) => <TranscriptParagraph key={paragraph.id} paragraph={paragraph} live={paragraph.id === liveSegment?.paragraphId} query={query} editingId={editingId} activeId={latestSourceRow?.id || null} rowRef={(element) => { activeRowRef.current = element; }} onBookmark={bookmark} onAsk={askAI} onEdit={setEditingId} onSaveEdit={saveEdit} />)}
+            {transcriptView === "paired" ? orderedParagraphs.map((paragraph) => <article key={paragraph.id} data-paragraph-id={paragraph.id} className={styles.pairedParagraph}>
+              {paragraph.segments.map((segment) => <PairedSegment key={segment.id} segment={segment} glossary={glossary} query={query} editing={editingId === segment.id} active={segment.id === latestSourceRow?.id} live={segment.id.startsWith("live:")} rowRef={segment.id === latestSourceRow?.id ? (element) => { activeRowRef.current = element; } : undefined} onInspect={suspendFollow} onBookmark={bookmark} onAsk={(item) => { suspendFollow(); askAI(item); }} onEdit={(id) => { suspendFollow(); setEditingId(id); }} onSaveEdit={saveEdit} />)}
+            </article>) : orderedParagraphs.map((paragraph) => <TranscriptParagraph key={paragraph.id} paragraph={paragraph} live={paragraph.id === liveSegment?.paragraphId} query={query} editingId={editingId} activeId={latestSourceRow?.id || null} rowRef={(element) => { activeRowRef.current = element; }} onBookmark={bookmark} onAsk={askAI} onEdit={setEditingId} onSaveEdit={saveEdit} />)}
             {tab === "bookmarks" && !filteredSegments.length ? <div className={styles.emptySmall}><Icon name="bookmark" /><p>No bookmarks yet.</p></div> : null}
             <div className={styles.transcriptRunway} aria-hidden="true" />
           </div> : null}
