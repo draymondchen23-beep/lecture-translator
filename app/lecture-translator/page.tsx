@@ -234,35 +234,37 @@ const SegmentInline = memo(function SegmentInline({ segment, query, editing, act
   </span>;
 });
 
-const PairedSegment = memo(function PairedSegment({ glossary, onInspect, ...props }: ComponentProps<typeof SegmentInline> & {
+const PairedParagraph = memo(function PairedParagraph({ paragraph, glossary, editingId, activeId, onInspect, ...props }: Omit<ComponentProps<typeof SegmentInline>, "segment" | "editing" | "active" | "live"> & {
+  paragraph: { id: string; segments: TranscriptSegment[] }; editingId: string; activeId: string | null;
   glossary: ReturnType<typeof buildGlossary>; onInspect(): void;
 }) {
-  const { segment, editing, active, live } = props;
-  const annotations = useMemo(() => annotatePair(segment.sourceText, segment.translatedText, glossary), [segment.sourceText, segment.translatedText, glossary]);
-  const [selection, setSelection] = useState<{ id: string; source: string; translation: string } | null>(null);
-  const selected = selection?.source === segment.sourceText && selection.translation === segment.translatedText
-    ? annotations.entries.find((entry) => entry.id === selection.id) : undefined;
-  const renderText = (tokens: typeof annotations.source) => tokens.map((token, index) => {
+  const annotated = useMemo(() => paragraph.segments.map((segment) => ({ segment, annotations: annotatePair(segment.sourceText, segment.translatedText, glossary) })), [paragraph.segments, glossary]);
+  const [selection, setSelection] = useState<{ segmentId: string; id: string; source: string; translation: string } | null>(null);
+  const selectedPair = annotated.find(({ segment }) => segment.id === selection?.segmentId && segment.sourceText === selection.source && segment.translatedText === selection.translation);
+  const selected = selectedPair?.annotations.entries.find((entry) => entry.id === selection?.id);
+  const renderText = (tokens: ReturnType<typeof annotatePair>["source"], segment: TranscriptSegment, annotations: ReturnType<typeof annotatePair>) => tokens.map((token, index) => {
     const entry = token.id ? annotations.entries.find((item) => item.id === token.id) : undefined;
+    const pressed = selected?.id === entry?.id && selectedPair?.segment.id === segment.id;
     return entry ? <button key={`${entry.id}:${index}`} type="button"
-      className={`${styles.annotation} ${entry.kind === "term" ? styles.academicTerm : styles.culturalExpression} ${selected?.id === entry.id ? styles.annotationSelected : ""}`}
-      aria-pressed={selected?.id === entry.id} aria-label={`${token.text}：查看${entry.kind === "term" ? "术语" : "表达"}解释`}
-      onClick={() => { onInspect(); setSelection(selected?.id === entry.id ? null : { id: entry.id, source: segment.sourceText, translation: segment.translatedText }); }}
+      className={`${styles.annotation} ${entry.kind === "term" ? styles.academicTerm : styles.culturalExpression} ${pressed ? styles.annotationSelected : ""}`}
+      aria-pressed={pressed} aria-label={`${token.text}：查看${entry.kind === "term" ? "术语" : "表达"}解释`}
+      onClick={() => { onInspect(); setSelection(pressed ? null : { segmentId: segment.id, id: entry.id, source: segment.sourceText, translation: segment.translatedText }); }}
     >{token.text}</button> : <span key={index}>{token.text}</span>;
   });
-  return <section className={`${styles.pairedUnit} ${active ? styles.pairedActive : ""}`} data-paired-unit={segment.id}>
-    <SegmentInline {...props} sourceContent={segment.sourceText ? renderText(annotations.source) : undefined} />
-    {!editing ? <div lang="zh-CN" className={`${styles.pairedTranslation} ${segment.translationStatus === "draft" || segment.translationStatus === "pending" ? styles.translationDraft : ""}`} data-segment-id={`${segment.id}-translation`}>
-      {segment.translatedText ? renderText(annotations.translation) : <span className={styles.muted}>{segment.translationStatus === "error" ? "本句翻译暂不可用" : "等待本句译文…"}</span>}
-    </div> : null}
-    {selected && !editing ? <aside className={styles.annotationNote} aria-label="词语解释" onKeyDown={(event) => { if (event.key === "Escape") { setSelection(null); } }}>
+  return <article className={styles.pairedParagraph} data-paragraph-id={paragraph.id}>
+    <div className={`${styles.pairedUnit} ${paragraph.segments.some((segment) => segment.id === activeId) ? styles.pairedActive : ""}`} data-paired-unit={paragraph.id}>
+      <div className={styles.pairedSource}>{annotated.map(({ segment, annotations }) => <SegmentInline {...props} key={segment.id} segment={segment} editing={editingId === segment.id} active={segment.id === activeId} live={segment.id.startsWith("live:")} rowRef={segment.id === activeId ? props.rowRef : undefined} sourceContent={segment.sourceText ? renderText(annotations.source, segment, annotations) : undefined} />)}</div>
+      <div lang="zh-CN" className={styles.pairedTranslation}>{annotated.map(({ segment, annotations }) => editingId === segment.id ? null : <span key={segment.id} className={segment.translationStatus === "draft" || segment.translationStatus === "pending" ? styles.translationDraft : undefined} data-segment-id={`${segment.id}-translation`}>
+        {segment.translatedText ? renderText(annotations.translation, segment, annotations) : <span className={styles.muted}>{segment.translationStatus === "error" ? "〔本片段翻译暂不可用〕" : "〔等待译文…〕"}</span>}{" "}
+      </span>)}</div>
+    {selected && !editingId ? <aside className={styles.annotationNote} aria-label="词语解释" onKeyDown={(event) => { if (event.key === "Escape") { setSelection(null); } }}>
       <strong>{selected.english} · {selected.chinese}</strong>
-      <p>{selected.explanation || "本课程术语对应。可通过 Ask AI 查看这句话中的具体含义。"}</p>
+      <p>{selected.explanation || "术语对照。可通过 Ask AI 查看这句话中的具体含义。"}</p>
       {selected.kind === "idiom" ? <small>常见表达释义，具体语气需结合上下文。</small> : null}
       <button type="button" className={styles.annotationClose} aria-label="收起解释" onClick={() => setSelection(null)}>收起</button>
     </aside> : null}
-    {live ? <span className={styles.srOnly}>实时片段</span> : null}
-  </section>;
+    </div>
+  </article>;
 });
 
 const TranscriptParagraph = memo(function TranscriptParagraph({ paragraph, query, editingId, activeId, live, rowRef, onBookmark, onAsk, onEdit, onSaveEdit }: {
@@ -380,7 +382,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
         } as TranscriptSegment;
         if (!existing) next.paragraphId = assignParagraphId(session.segments, next);
         const segments = existing ? session.segments.map((item) => item.id === next.id ? next : item) : [...session.segments, next];
-        return { ...session, segments: segments.sort((a, b) => a.sequence - b.sequence) };
+        return { ...session, segments: migrateParagraphIds(segments) };
       });
       if (incoming.sourceStatus === "draft" && incoming.sourceText) setLatestAnchorId(incoming.segmentId);
       return;
@@ -409,7 +411,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
       updateSession(sessionId, (current) => {
         if (current.segments.some((item) => item.id === segment.id)) return current;
         segment.paragraphId = assignParagraphId(current.segments, segment);
-        return { ...current, segments: [...current.segments, segment] };
+        return { ...current, segments: migrateParagraphIds([...current.segments, segment]) };
       });
       setPartial((current) => reducePartialEvent(current, event));
       if (shouldRefineFinal(event) && finalSegmentGateRef.current.claim(sessionId, segment.id)) void refineSegment(sessionId, segment);
@@ -752,7 +754,18 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
     workspace.sessions.forEach((session) => groups[session.pinned ? "Pinned" : relativeGroup(session.date)].push(session));
     return groups;
   }, [workspace.sessions]);
-  const paragraphs = useMemo(() => groupParagraphs(activeSession.segments), [activeSession.segments]);
+  const hasLiveContent = Boolean(partial.source || partial.translation);
+  const liveSegment = useMemo(() => hasLiveContent ? ({
+    id: `live:${partial.sequence}`, paragraphId: "", sessionId: activeSession.id,
+    sequence: activeSession.segments.reduce((next, segment) => Math.max(next, segment.sequence + 1), partial.sequence),
+    startTime: 0, endTime: 0, sourceText: partial.source, translatedText: partial.translation,
+    sourceLanguage: "en", targetLanguage: "zh", provider: activeProvider || "qwen", speaker: "Lecturer",
+    confidence: null, isFinal: true, sourceStatus: "draft", translationStatus: "draft",
+    createdAt: "", bookmarked: false, refinementState: "idle",
+  } satisfies TranscriptSegment) : null, [hasLiveContent, partial, activeSession.id, activeSession.segments, activeProvider]);
+  // The provisional tail goes through the same source-sentence grouping as
+  // saved rows; it must not be unconditionally appended to the last paragraph.
+  const paragraphs = useMemo(() => groupParagraphs([...activeSession.segments, ...(liveSegment ? [liveSegment] : [])]), [activeSession.segments, liveSegment]);
   const filteredParagraphs = useMemo(() => paragraphs.filter((paragraph) => paragraph.segments.some((segment) => {
     if (tab === "bookmarks" && !segment.bookmarked) return false;
     return !query || `${segment.sourceText} ${segment.translatedText}`.toLowerCase().includes(query.toLowerCase());
@@ -760,17 +773,13 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
   const filteredSegments = filteredParagraphs.flatMap((paragraph) => paragraph.segments);
   const visibleParagraphs = showOlder || filteredParagraphs.length <= 500 ? filteredParagraphs : filteredParagraphs.slice(-500);
   const visibleSegments = visibleParagraphs.flatMap((paragraph) => paragraph.segments);
-  const hasLiveContent = Boolean(partial.source || partial.translation);
-  const latestVisibleSegmentId = latestAnchorId && visibleSegments.some((segment) => segment.id === latestAnchorId)
-    ? latestAnchorId : (!hasLiveContent ? visibleSegments.at(-1)?.id || null : null);
-  const liveParagraphId = visibleParagraphs.at(-1)?.id || `live:${partial.sequence}`;
-  const liveSegment = hasLiveContent ? ({ id: `live:${partial.sequence}`, paragraphId: liveParagraphId, sessionId: activeSession.id, sequence: partial.sequence, startTime: 0, endTime: 0, sourceText: partial.source, translatedText: partial.translation, sourceLanguage: "en", targetLanguage: "zh", provider: activeProvider || "qwen", speaker: "Lecturer", confidence: null, isFinal: true, createdAt: new Date().toISOString(), bookmarked: false, refinementState: "idle" } satisfies TranscriptSegment) : null;
-  const orderedParagraphs = liveSegment && visibleParagraphs.length ? [...visibleParagraphs.slice(0, -1), { ...visibleParagraphs.at(-1)!, segments: [...visibleParagraphs.at(-1)!.segments, liveSegment] }] : liveSegment ? [{ id: liveSegment.paragraphId, segments: [liveSegment] }] : visibleParagraphs;
-  const latestSourceRow = [...visibleSegments, ...(liveSegment ? [liveSegment] : [])].filter((segment) => segment.sourceText.trim()).reduce<TranscriptSegment | null>((latest, segment) => !latest || segment.sequence > latest.sequence ? segment : latest, null);
+  const orderedParagraphs = visibleParagraphs;
+  const visibleRowIds = JSON.stringify(orderedParagraphs.map((paragraph) => paragraph.id));
+  const latestSourceRow = visibleSegments.filter((segment) => segment.sourceText.trim()).reduce<TranscriptSegment | null>((latest, segment) => !latest || segment.sequence > latest.sequence ? segment : latest, null);
   const centerActiveRow = useCallback((behavior: ScrollBehavior = "auto") => {
     const container = transcriptRef.current;
     const row = activeRowRef.current;
-    if (!container || !row || !autoFollowing) return;
+    if (!container || !row || !autoFollowing || !workspace.settings.autoScroll) return;
     const rect = container.getBoundingClientRect();
     const dockTop = dockRef.current?.getBoundingClientRect().top ?? rect.bottom;
     const sticky = container.querySelector<HTMLElement>(`.${styles.columnTitle}`);
@@ -794,7 +803,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
     if (Math.abs(delta) < 18) return;
     const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     container.scrollBy({ top: delta, behavior: behavior === "auto" || reduced ? "instant" : behavior });
-  }, [autoFollowing, transcriptView]);
+  }, [autoFollowing, transcriptView, workspace.settings.autoScroll]);
   const centerFrameRef = useRef<number | null>(null);
   const captureManualAnchor = useCallback(() => {
     const container = transcriptRef.current;
@@ -842,7 +851,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
     container.querySelectorAll<HTMLElement>("[data-paragraph-id]").forEach((paragraph) => observer.observe(paragraph));
     if (dockRef.current) observer.observe(dockRef.current);
     return () => observer.disconnect();
-  }, [autoFollowing, centerActiveRow, orderedParagraphs.length, tab]);
+  }, [autoFollowing, centerActiveRow, visibleRowIds, tab]);
   const suspendFollow = useCallback(() => { captureManualAnchor(); setAutoFollowing(false); }, [captureManualAnchor]);
   useEffect(() => {
     if (autoFollowing || !manualAnchorRef.current) return;
@@ -903,13 +912,12 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
             {transcriptView === "paired" ? <div className={styles.readingLegend}><span className={styles.termLegend}>学术术语</span><span className={styles.idiomLegend}>口语表达</span><span>点词查看解释</span></div> : null}
           </div>
           {!activeSession.segments.length && !partial.source ? <div className={styles.emptyState}><h2>Start a lecture</h2><p>Live transcription, translation and AI notes.</p>{providerStatusLoaded && !providerStatus.qwen && !providerStatus.tencent ? <div className={styles.setupNotice}><strong>Translation setup required</strong><span>Qwen and Tencent are not configured on this server.</span><button onClick={() => setSettingsOpen(true)}>View API status</button></div> : null}<button onClick={startLecture}><Icon name="mic" /> Start lecture</button></div> : null}
-          {!showOlder && filteredParagraphs.length > 500 ? <button className={styles.loadOlder} onClick={() => setShowOlder(true)}>Show {filteredParagraphs.length - 500} older paragraphs</button> : null}
+          {!showOlder && filteredParagraphs.length > 500 ? <button className={styles.loadOlder} onClick={() => setShowOlder(true)}>Show {filteredParagraphs.length - 500} older sentences</button> : null}
           {(orderedParagraphs.length || tab === "bookmarks") ? <div ref={transcriptRef} className={styles.transcriptStream} tabIndex={0} onWheel={suspendFollow} onTouchMove={suspendFollow} onKeyDown={(event) => { if (["ArrowUp", "PageUp", "Home", "ArrowDown", "PageDown", "End"].includes(event.key)) suspendFollow(); }} onScroll={() => { if (!autoFollowing) requestAnimationFrame(captureManualAnchor); }}>
             <div className={`${styles.columnTitle} ${transcriptView === "paired" ? styles.pairedTitle : ""}`}>{transcriptView === "paired" ? <span>English → 中文 · 中英逐句对照</span> : <><span>English</span><span>中文</span></>}</div>
             <div className={styles.transcriptRunway} aria-hidden="true" />
-            {transcriptView === "paired" ? orderedParagraphs.map((paragraph) => <article key={paragraph.id} data-paragraph-id={paragraph.id} className={styles.pairedParagraph}>
-              {paragraph.segments.map((segment) => <PairedSegment key={segment.id} segment={segment} glossary={glossary} query={query} editing={editingId === segment.id} active={segment.id === latestSourceRow?.id} live={segment.id.startsWith("live:")} rowRef={segment.id === latestSourceRow?.id ? (element) => { activeRowRef.current = element; } : undefined} onInspect={suspendFollow} onBookmark={bookmark} onAsk={(item) => { suspendFollow(); askAI(item); }} onEdit={(id) => { suspendFollow(); setEditingId(id); }} onSaveEdit={saveEdit} />)}
-            </article>) : orderedParagraphs.map((paragraph) => <TranscriptParagraph key={paragraph.id} paragraph={paragraph} live={paragraph.id === liveSegment?.paragraphId} query={query} editingId={editingId} activeId={latestSourceRow?.id || null} rowRef={(element) => { activeRowRef.current = element; }} onBookmark={bookmark} onAsk={askAI} onEdit={setEditingId} onSaveEdit={saveEdit} />)}
+            {transcriptView === "paired" ? orderedParagraphs.map((paragraph) => <PairedParagraph key={paragraph.id} paragraph={paragraph} glossary={glossary} query={query} editingId={editingId} activeId={latestSourceRow?.id || null} rowRef={(element) => { activeRowRef.current = element; }} onInspect={suspendFollow} onBookmark={bookmark} onAsk={(item) => { suspendFollow(); askAI(item); }} onEdit={(id) => { suspendFollow(); setEditingId(id); }} onSaveEdit={saveEdit} />)
+              : orderedParagraphs.map((paragraph) => <TranscriptParagraph key={paragraph.id} paragraph={paragraph} live={paragraph.segments.some((segment) => segment.id === liveSegment?.id)} query={query} editingId={editingId} activeId={latestSourceRow?.id || null} rowRef={(element) => { activeRowRef.current = element; }} onBookmark={bookmark} onAsk={askAI} onEdit={setEditingId} onSaveEdit={saveEdit} />)}
             {tab === "bookmarks" && !filteredSegments.length ? <div className={styles.emptySmall}><Icon name="bookmark" /><p>No bookmarks yet.</p></div> : null}
             <div className={styles.transcriptRunway} aria-hidden="true" />
           </div> : null}

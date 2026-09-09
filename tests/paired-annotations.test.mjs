@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildGlossary, annotatePair } from "../app/lecture-translator/paired-annotations.mjs";
+import { groupParagraphs } from "../app/lecture-translator/paragraph-grouping.mjs";
 
 const marked = (tokens) => tokens.filter((token) => token.id).map((token) => token.text);
 test("course terminology overrides notes and built-ins without losing matching explanations", () => {
@@ -42,4 +43,17 @@ test("literal punctuation, whitespace and Unicode do not corrupt offsets", () =>
   const result = annotatePair(source, "C加加与细胞黏附", glossary);
   assert.deepEqual(marked(result.source), ["C++", "cell\nadhesion"]);
   assert.equal(result.source.map((token) => token.text).join(""), source);
+});
+test("paired sentence view keeps an incomplete source and its continuation in one unit", () => {
+  const segments = [
+    { id: "one", sequence: 0, sourceText: "The extracellular matrix helps cells, and", translatedText: "细胞外基质帮助细胞，", sourceStatus: "final" },
+    { id: "two", sequence: 1, sourceText: "it supports cell adhesion.", translatedText: "并支持细胞黏附。", sourceStatus: "final" },
+    { id: "three", sequence: 2, sourceText: "We discuss a scaffold.", translatedText: "我们讨论支架。", sourceStatus: "final" },
+  ];
+  const rows = groupParagraphs(segments);
+  assert.deepEqual(rows.map((row) => row.segments.map((segment) => segment.id)), [["one", "two"], ["three"]]);
+  const glossary = buildGlossary();
+  const first = rows[0].segments.map((segment) => annotatePair(segment.sourceText, segment.translatedText, glossary));
+  assert.deepEqual(first.flatMap((pair) => marked(pair.translation)), ["细胞外基质", "细胞黏附"]);
+  assert.deepEqual(groupParagraphs(segments.map((segment) => ({ ...segment, translatedText: "" }))).map((row) => row.id), rows.map((row) => row.id));
 });
