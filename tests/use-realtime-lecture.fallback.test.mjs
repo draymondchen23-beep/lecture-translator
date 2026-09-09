@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import * as browser from "../app/lecture-translator/browser-incremental.mjs";
 import * as captions from "../app/lecture-translator/caption-stabilizer.mjs";
 import * as realtime from "../app/lecture-translator/realtime-caption-state.mjs";
+import * as browserCaptions from "../app/lecture-translator/browser-caption-accumulator.mjs";
 
 const requireFromApp = createRequire(import.meta.url);
 const ts = requireFromApp("typescript");
@@ -19,7 +20,7 @@ function event(results, resultIndex = 0) {
   return { resultIndex, results: Object.assign(results, { length: results.length }) };
 }
 
-function loadHook(onEvent) {
+function loadHook(onEvent, translate = async (text) => `译：${text}`) {
   const refs = [];
   let refIndex = 0;
   const react = {
@@ -38,13 +39,14 @@ function loadHook(onEvent) {
   const compiled = ts.transpileModule(hookSource, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const context = {
     exports: {}, module: { exports: {} }, console, process: { env: { NODE_ENV: "production" } }, crypto: { randomUUID: () => "uuid" },
-    fetch: async (_url, options) => ({ ok: true, json: async () => ({ translation: `译：${JSON.parse(options.body).text}` }) }),
-    window: { location: { hostname: "demo.chatgpt.site", protocol: "https:", host: "demo.chatgpt.site" }, setTimeout, clearTimeout, SpeechRecognition },
+    fetch: async (_url, options) => ({ ok: true, json: async () => ({ translation: await translate(JSON.parse(options.body).text) }) }),
+    window: { location: { hostname: "demo.chatgpt.site", protocol: "https:", host: "demo.chatgpt.site" }, setTimeout: (fn, delay) => { const timer = setTimeout(fn, delay); timer.unref(); return timer; }, clearTimeout, SpeechRecognition },
     require(id) {
       if (id === "react") return react;
       if (id.endsWith("browser-incremental.mjs")) return browser;
       if (id.endsWith("caption-stabilizer.mjs")) return captions;
       if (id.endsWith("realtime-caption-state.mjs")) return realtime;
+      if (id.endsWith("browser-caption-accumulator.mjs")) return browserCaptions;
       return {};
     },
   };
@@ -55,17 +57,19 @@ function loadHook(onEvent) {
   return { api, get recognition() { return recognition; } };
 }
 
-test("fallback finals flush independent unpunctuated result streams without loss", async () => {
+test("unpunctuated final result ids accumulate until capture pause without loss", async () => {
   const events = [];
   const runtime = loadHook((item) => events.push(item));
   await runtime.api.start();
   const first = result("first unpunctuated utterance", true);
   runtime.recognition.onresult(event([first]));
   runtime.recognition.onresult(event([first, result("second unpunctuated utterance", true)], 1));
-  assert.deepEqual(events.filter((item) => item.type === "segment.upsert" && item.sourceStatus === "final").map((item) => item.sourceText), ["first unpunctuated utterance", "second unpunctuated utterance"]);
+  assert.equal(events.filter((item) => item.type === "segment.upsert" && item.sourceStatus === "final").length, 0);
+  await runtime.api.pause();
+  assert.deepEqual(events.filter((item) => item.type === "segment.upsert" && item.sourceStatus === "final" && !item.translationText).map((item) => item.sourceText), ["first unpunctuated utterance second unpunctuated utterance"]);
   await new Promise(setImmediate);
   const translated = events.filter((item) => item.type === "segment.upsert" && item.translationStatus === "final");
-  assert.equal(translated.length, 2);
+  assert.equal(translated.length, 1);
   assert.ok(translated.every((item) => item.translationText === `译：${item.sourceText}`));
 });
 
@@ -80,9 +84,10 @@ test("fallback cursor handles an interim-to-final revision and a multi-index cal
   const final = result(corrected, true);
   runtime.recognition.onresult(event([final]));
   runtime.recognition.onresult(event([final, result("separate first", true), result("separate second", true)], 1));
-  const finals = events.filter((item) => item.type === "segment.upsert" && item.sourceStatus === "final").map((item) => item.sourceText);
-  assert.equal(finals.slice(0, 2).join(" "), corrected);
-  assert.deepEqual(finals.slice(2), ["separate first", "separate second"]);
+  await runtime.api.pause();
+  const finals = [...new Map(events.filter((item) => item.type === "segment.upsert" && item.sourceStatus === "final").map((item) => [item.segmentId, item])).values()];
+  assert.equal(finals.map((item) => item.sourceText).join(" "), `${corrected} separate first separate second`);
+  assert.ok(finals.every((item) => item.sourceText.split(" ").length <= 18));
 });
 
 test("hardware lecture grows through repeated ASR snapshots without duplicate or missing source", async () => {
@@ -97,9 +102,63 @@ test("hardware lecture grows through repeated ASR snapshots without duplicate or
     runtime.recognition.onresult(event([snapshot]));
   }
   runtime.recognition.onresult(event([result(source, true)]));
+  await runtime.api.pause();
   await new Promise(setImmediate);
   const finals = [...rows.values()].filter((row) => row.sourceStatus === "final");
   assert.equal(finals.map((row) => row.sourceText).join(" "), source);
   assert.ok(finals.every((row) => row.sourceText.split(" ").length <= 18 && row.sourceText.length <= 120));
   assert.ok(finals.every((row) => row.translationText === `译：${row.sourceText}`));
+});
+
+test("screenshot word finals and recognizer restarts produce one phrase and one translation", async () => {
+  const rows = new Map();
+  const requests = [];
+  const runtime = loadHook((item) => { if (item.type === "segment.upsert") rows.set(item.segmentId, item); }, async (text) => { requests.push(text); return `译：${text}`; });
+  await runtime.api.start();
+  for (const word of ["and", "it's", "a", "really", "rewarding"]) {
+    runtime.recognition.onresult(event([result(word, true)]));
+    assert.equal([...rows.values()].filter((row) => row.sourceStatus === "final").length, 0);
+    runtime.recognition.onend();
+  }
+  runtime.recognition.onresult(event([result("experience.", true)]));
+  await runtime.api.pause();
+  const finals = [...rows.values()].filter((row) => row.sourceStatus === "final");
+  assert.equal(finals.length, 1);
+  assert.equal(finals[0].sourceText, "and it's a really rewarding experience.");
+  assert.equal(finals[0].translationText, "译：and it's a really rewarding experience.");
+  assert.deepEqual(requests, ["and it's a really rewarding experience."]);
+});
+
+test("explicit pause preserves the full tentative tail without duplicating stable words", async () => {
+  const rows = new Map();
+  const runtime = loadHook((item) => { if (item.type === "segment.upsert") rows.set(item.segmentId, item); });
+  await runtime.api.start();
+  runtime.recognition.onresult(event([result("this is", true), result("the very last audible phrase", false)]));
+  await runtime.api.pause();
+  const finals = [...rows.values()].filter((row) => row.sourceStatus === "final");
+  assert.equal(finals.map((row) => row.sourceText).join(" "), "this is the very last audible phrase");
+});
+
+test("a late short draft translation cannot replace the completed sentence translation", async () => {
+  const events = [];
+  let releaseDraft;
+  const runtime = loadHook((item) => events.push(item), async (text) => {
+    if (text === "the membrane controls the movement of") await new Promise((resolve) => { releaseDraft = resolve; });
+    return `译：${text}`;
+  });
+  await runtime.api.start();
+  const prefix = result("the membrane controls the movement of", true);
+  runtime.recognition.onresult(event([prefix]));
+  // The existing debounce has a one-second max wait while silence checks run.
+  await new Promise((resolve) => setTimeout(resolve, 1_200));
+  assert.equal(typeof releaseDraft, "function");
+  runtime.recognition.onresult(event([prefix, result("ions.", true)], 1));
+  await new Promise(setImmediate);
+  releaseDraft();
+  await runtime.api.pause();
+  const rows = [...new Map(events.filter((item) => item.type === "segment.upsert").map((item) => [item.segmentId, item])).values()];
+  const finals = rows.filter((row) => row.sourceStatus === "final");
+  assert.equal(finals.length, 1);
+  assert.equal(finals[0].translationText, "译：the membrane controls the movement of ions.");
+  assert.equal(events.some((item) => item.sourceText?.endsWith("ions.") && item.translationText === "译：the membrane controls the movement of"), false);
 });

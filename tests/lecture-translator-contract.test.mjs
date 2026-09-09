@@ -6,7 +6,7 @@ const root = new URL("../", import.meta.url);
 const read = (path) => readFile(new URL(path, root), "utf8");
 
 test("lecture translator uses continuous PCM streaming through Qwen's realtime protocol", async () => {
-  const [page, hook, relay, worklet, route, viteConfig, worker, stabilizer, itemPairer] = await Promise.all([
+  const [page, hook, relay, worklet, route, viteConfig, worker, stabilizer, browserCaptions, itemPairer] = await Promise.all([
     read("app/lecture-translator/page.tsx"),
     read("app/lecture-translator/use-realtime-lecture.ts"),
     read("server/realtime-proxy.ts"),
@@ -15,6 +15,7 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
     read("vite.config.ts"),
     read("worker/realtime.ts"),
     read("app/lecture-translator/caption-stabilizer.mjs"),
+    read("app/lecture-translator/browser-caption-accumulator.mjs"),
     read("app/lecture-translator/qwen-item-pairing.mjs"),
   ]);
 
@@ -35,14 +36,14 @@ test("lecture translator uses continuous PCM streaming through Qwen's realtime p
   assert.match(hook, /quality: "accurate"/);
   assert.match(hook, /translateFallback\(sessionId, commit\.sourceText, commit\.segmentId\)/);
   assert.doesNotMatch(hook, /commit\.context/);
-  assert.match(hook, /SentenceAccumulator/);
   assert.match(hook, /createBoundedTranslationQueue/);
-  assert.match(hook, /fallbackAccumulatorRef\.current\?\.ingest/);
-  assert.match(hook, /fallbackAccumulatorRef\.current\?\.advance/);
+  assert.match(hook, /BrowserCaptionAccumulator/);
+  assert.match(hook, /fallbackBrowserCaptionsRef\.current\?\.update/);
+  assert.match(hook, /fallbackBrowserCaptionsRef\.current\?\.advance/);
   assert.match(hook, /DEFAULT_BOUNDARY_CONFIG\.boundaryGraceMs/);
   assert.match(hook, /DEFAULT_BOUNDARY_CONFIG\.resumeMergeMs/);
-  assert.match(hook, /commonStablePrefix/);
-  assert.match(hook, /textAfterStablePrefix/);
+  assert.doesNotMatch(hook, /commonStablePrefix|textAfterStablePrefix/);
+  assert.match(browserCaptions, /sentence\.takeImmediateBoundaries/);
   assert.match(hook, /clearFallbackPauseTimer\(\)/);
   assert.match(hook, /fallbackTranslationQueueRef\.current\?\.enqueue/);
   assert.doesNotMatch(hook, /queueFallbackInterim|tentativeTranslationPlan|"fast"/);
