@@ -704,8 +704,8 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
     realtime.pause();
     updateSession(activeSession.id, (session) => ({ ...session, status: "paused", duration: elapsed }));
   };
-  const resumeLecture = () => {
-    realtime.resume();
+  const resumeLecture = async () => {
+    if (await realtime.resume() === false) return;
     updateSession(activeSession.id, (session) => ({ ...session, status: "recording", startedAt: new Date(Date.now() - session.duration * 1_000).toISOString() }));
   };
 

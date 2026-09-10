@@ -18,10 +18,10 @@ export class BrowserCaptionAccumulator {
     this.startedAt = null;
   }
 
-  update(id, snapshot, isFinal, now = Date.now()) {
+  update(id, snapshot, isFinal, now = Date.now(), options = {}) {
     const key = String(id || "");
     const source = clean(snapshot);
-    if (!key) return this.drain(now);
+    if (!key) return this.drain(now, options);
     let entry = this.entries.get(key);
     if (!entry) {
       // Moving to another recognizer result/run retains the preceding audible
@@ -34,7 +34,7 @@ export class BrowserCaptionAccumulator {
       entry = { text: "", stable: "", consumed: 0, final: false };
       this.entries.set(key, entry);
       this.order.push(key);
-    } else if (!this.order.includes(key)) return this.drain(now);
+    } else if (!this.order.includes(key)) return this.drain(now, options);
     const next = words(source).slice(entry.consumed).join(" ");
     const stable = isFinal ? next : commonStablePrefix(entry.text, next);
     if (next !== entry.text || stable !== entry.stable || isFinal !== entry.final) this.lastActivityAt = now;
@@ -42,7 +42,7 @@ export class BrowserCaptionAccumulator {
     entry.stable = stable;
     entry.final = isFinal;
     if (next && this.startedAt === null) this.startedAt = now;
-    return this.drain(now);
+    return this.drain(now, options);
   }
 
   displayText() {
@@ -78,6 +78,11 @@ export class BrowserCaptionAccumulator {
 
   drain(now, options = {}) {
     const display = this.displayText();
+    // Final callbacks during shutdown may still revise the pending tail.
+    if (options.deferCommit) {
+      const stableText = this.stableText();
+      return { stableText, tentativeText: display.slice(stableText.length).trim(), displayText: display, commits: [] };
+    }
     const inactiveFor = now - (this.lastActivityAt ?? now);
     const age = now - (this.startedAt ?? now);
     const force = options.force || (isReadableCaption(display, this.config) && (inactiveFor >= this.config.hardSilenceMs || age >= this.config.maxDurationMs));

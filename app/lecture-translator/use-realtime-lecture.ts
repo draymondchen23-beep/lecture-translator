@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { bestTranscript, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately } from "./browser-incremental.mjs";
 import { DEFAULT_BOUNDARY_CONFIG, splitReadingUnits } from "./caption-stabilizer.mjs";
 import { BrowserCaptionAccumulator, isReadableCaption } from "./browser-caption-accumulator.mjs";
+import { stopBrowserRecognition } from "./browser-recognition-stop.mjs";
 import { createBoundedTranslationQueue, RealtimeCaptionNormalizer } from "./realtime-caption-state.mjs";
 import type { LectureState, ProviderPreference, RealtimeServerEvent } from "./types";
 
@@ -97,6 +98,9 @@ export function useRealtimeLecture(options: Options) {
   const fallbackEpochRef = useRef(0);
   const fallbackRecognitionRunRef = useRef(0);
   const fallbackBrowserCaptionsRef = useRef<BrowserCaptionAccumulator | null>(null);
+  const fallbackDrainingRef = useRef(false);
+  const fallbackFinishRef = useRef<Promise<void> | null>(null);
+  const fallbackStartRecognitionRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     optionsRef.current = options;
@@ -278,6 +282,7 @@ export function useRealtimeLecture(options: Options) {
   }, [emit]);
 
   const scheduleFallbackDraft = useCallback(() => {
+    if (pausedRef.current || intentionalCloseRef.current) return;
     const now = Date.now();
     if (!fallbackDraftFirstAtRef.current) fallbackDraftFirstAtRef.current = now;
     if (fallbackDraftTimerRef.current !== null) window.clearTimeout(fallbackDraftTimerRef.current);
@@ -370,6 +375,52 @@ export function useRealtimeLecture(options: Options) {
     if (update) publishFallbackUpdate(update);
   }, [clearFallbackPauseTimer, publishFallbackUpdate]);
 
+  const finishFallbackCapture = useCallback(() => {
+    if (fallbackFinishRef.current) return fallbackFinishRef.current;
+    if (!fallbackActiveRef.current) return Promise.resolve();
+    clearFallbackPauseTimer();
+    clearFallbackDraftTimer();
+    if (fallbackRestartRef.current !== null) window.clearTimeout(fallbackRestartRef.current);
+    fallbackRestartRef.current = null;
+    fallbackDrainingRef.current = true;
+    const recognition = speechRef.current;
+    const epoch = fallbackEpochRef.current;
+    const finish = (async () => {
+      if (recognition) {
+        await stopBrowserRecognition(recognition, {
+          timeoutMs: 1_500,
+          setTimeout: window.setTimeout.bind(window),
+          clearTimeout: window.clearTimeout.bind(window),
+        });
+        // Quarantine this instance, including callbacks arriving after timeout.
+        recognition.onresult = null;
+        recognition.onerror = null;
+        recognition.onend = null;
+        if (speechRef.current === recognition) speechRef.current = null;
+        try { recognition.abort(); } catch { /* already ended */ }
+      }
+      fallbackDrainingRef.current = false;
+      if (!fallbackActiveRef.current || epoch !== fallbackEpochRef.current) return;
+      flushFallbackBlock();
+      let timeout: number | undefined;
+      await Promise.race([
+        waitForFallbackWork(),
+        new Promise<void>((resolve) => { timeout = window.setTimeout(resolve, 20_000); }),
+      ]);
+      if (timeout !== undefined) window.clearTimeout(timeout);
+      if (!fallbackActiveRef.current || epoch !== fallbackEpochRef.current) return;
+      // A translation timeout must not leave a permanently pending last row.
+      for (const row of fallbackRowsRef.current.values()) {
+        if (row.sourceStatus !== "final" || row.translationStatus !== "pending") continue;
+        row.translationStatus = "error";
+        emit({ type: "segment.upsert", sessionId: fallbackSessionRef.current, segmentId: row.segmentId, sequence: row.sequence, startTime: row.startedAt, endTime: Date.now(), sourceText: row.sourceText, sourceRevision: row.sourceRevision, sourceStatus: "final", translationText: row.translationText, translationRevision: row.translationRevision, translationStatus: "error", provider: "qwen" });
+        emit({ type: "error", message: "The final translation timed out. Your transcript has been saved.", recoverable: true });
+      }
+    })();
+    fallbackFinishRef.current = finish;
+    return finish;
+  }, [clearFallbackPauseTimer, clearFallbackDraftTimer, flushFallbackBlock, waitForFallbackWork, emit]);
+
   const startBrowserFallback = useCallback(() => {
     const speechWindow = window as unknown as {
       SpeechRecognition?: BrowserSpeechConstructor;
@@ -389,43 +440,60 @@ export function useRealtimeLecture(options: Options) {
     fallbackTranslationQueueRef.current = createBoundedTranslationQueue(translateFallbackCommit, { concurrency: 2, maxPending: 24 });
     fallbackEpochRef.current += 1;
     fallbackRecognitionRunRef.current = 0;
+    fallbackDrainingRef.current = false;
+    fallbackFinishRef.current = null;
     clearFallbackPauseTimer();
     clearFallbackDraftTimer();
     fallbackBrowserCaptionsRef.current = new BrowserCaptionAccumulator();
 
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    if ("maxAlternatives" in recognition) recognition.maxAlternatives = 3;
-    recognition.lang = "en-GB";
-    recognition.onresult = (event) => {
-      if (!shouldProcessBrowserResult({ fallbackActive: fallbackActiveRef.current, paused: pausedRef.current, intentionalClose: intentionalCloseRef.current })) return;
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const result = event.results[index];
-        const text = bestTranscript(result);
-        if (!text) continue;
-        const snapshotId = `${fallbackRecognitionRunRef.current}:${index}`;
-        const update = fallbackBrowserCaptionsRef.current?.update(snapshotId, text, result.isFinal, Date.now());
-        if (update) publishFallbackUpdate(update);
-        if (!result.isFinal) setState("SPEAKING");
-        scheduleFallbackPause();
-      }
-    };
-    recognition.onerror = (event) => {
-      if (event.error === "aborted" || event.error === "no-speech") return;
-      emit({ type: "error", message: `Browser transcription failed${event.error ? `: ${event.error}` : "."}`, recoverable: true });
-    };
-    recognition.onend = () => {
+    const beginRecognition = () => {
       if (!fallbackActiveRef.current || pausedRef.current || intentionalCloseRef.current) return;
-      // A restart changes only recognizer ids; it is not a source boundary.
-      scheduleFallbackPause(DEFAULT_BOUNDARY_CONFIG.resumeMergeMs);
-      fallbackRecognitionRunRef.current += 1;
-      fallbackRestartRef.current = window.setTimeout(() => {
-        try { recognition.start(); } catch { /* already restarting */ }
-      }, 250);
+      const recognition = new SpeechRecognition();
+      const run = fallbackRecognitionRunRef.current++;
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      if ("maxAlternatives" in recognition) recognition.maxAlternatives = 3;
+      recognition.lang = "en-GB";
+      recognition.onresult = (event) => {
+        if (speechRef.current !== recognition || !fallbackActiveRef.current) return;
+        if (!fallbackDrainingRef.current && !shouldProcessBrowserResult({ fallbackActive: fallbackActiveRef.current, paused: pausedRef.current, intentionalClose: intentionalCloseRef.current })) return;
+        for (let index = event.resultIndex; index < event.results.length; index += 1) {
+          const result = event.results[index];
+          const text = bestTranscript(result);
+          if (!text) continue;
+          const snapshotId = `${run}:${index}`;
+          const update = fallbackBrowserCaptionsRef.current?.update(snapshotId, text, result.isFinal, Date.now(), { deferCommit: fallbackDrainingRef.current });
+          if (update) publishFallbackUpdate(update);
+          if (!fallbackDrainingRef.current) {
+            if (!result.isFinal) setState("SPEAKING");
+            scheduleFallbackPause();
+          }
+        }
+      };
+      recognition.onerror = (event) => {
+        if (speechRef.current !== recognition) return;
+        if (event.error === "aborted" || event.error === "no-speech") return;
+        emit({ type: "error", message: `Browser transcription failed${event.error ? `: ${event.error}` : "."}`, recoverable: true });
+      };
+      recognition.onend = () => {
+        if (speechRef.current !== recognition) return;
+        if (!fallbackActiveRef.current || pausedRef.current || intentionalCloseRef.current) return;
+        speechRef.current = null;
+        // A restart changes only recognizer ids; it is not a source boundary.
+        scheduleFallbackPause(DEFAULT_BOUNDARY_CONFIG.resumeMergeMs);
+        if (fallbackRestartRef.current !== null) window.clearTimeout(fallbackRestartRef.current);
+        fallbackRestartRef.current = window.setTimeout(() => {
+          fallbackRestartRef.current = null;
+          try { beginRecognition(); } catch {
+            emit({ type: "error", message: "Browser transcription could not restart. Pause and resume to retry.", recoverable: true });
+          }
+        }, 250);
+      };
+      speechRef.current = recognition;
+      recognition.start();
     };
-    speechRef.current = recognition;
-    recognition.start();
+    fallbackStartRecognitionRef.current = beginRecognition;
+    beginRecognition();
     emit({ type: "state", state: "LISTENING", provider: "qwen", message: "Browser transcription compatibility mode" });
     return true;
   }, [cleanupSocket, clearFallbackDraftTimer, clearFallbackPauseTimer, emit, publishFallbackUpdate, scheduleFallbackPause, translateFallbackCommit]);
@@ -519,33 +587,41 @@ export function useRealtimeLecture(options: Options) {
   }, [connect, emit, startBrowserFallback, startMicrophone]);
 
   const pause = useCallback(async () => {
+    if (intentionalCloseRef.current || pausedRef.current) return;
     pausedRef.current = true;
     clearFallbackPauseTimer();
     clearFallbackDraftTimer();
     contextRef.current?.suspend().catch(() => undefined);
-    if (fallbackActiveRef.current) speechRef.current?.stop();
     socketRef.current?.send(JSON.stringify({ type: "session.pause" }));
     setLevel(0);
-    flushFallbackBlock();
-    await Promise.race([waitForFallbackWork(), new Promise<void>((resolve) => window.setTimeout(resolve, 20_000))]);
+    await finishFallbackCapture();
+    if (intentionalCloseRef.current) return;
     fallbackEpochRef.current += 1;
     setState("PAUSED");
-  }, [clearFallbackDraftTimer, clearFallbackPauseTimer, flushFallbackBlock, waitForFallbackWork]);
+  }, [clearFallbackDraftTimer, clearFallbackPauseTimer, finishFallbackCapture]);
 
-  const resume = useCallback(() => {
+  const resume = useCallback(async () => {
+    await fallbackFinishRef.current;
+    if (intentionalCloseRef.current || !pausedRef.current) return false;
     pausedRef.current = false;
     clearFallbackPauseTimer();
     clearFallbackDraftTimer();
     contextRef.current?.resume().catch(() => undefined);
     if (fallbackActiveRef.current) {
       fallbackEpochRef.current += 1;
+      fallbackFinishRef.current = null;
       fallbackBrowserCaptionsRef.current = new BrowserCaptionAccumulator();
       fallbackStartedAtRef.current = Date.now();
-      try { speechRef.current?.start(); } catch { /* already active */ }
+      try { fallbackStartRecognitionRef.current?.(); } catch {
+        pausedRef.current = true;
+        emit({ type: "error", message: "Browser transcription could not resume.", recoverable: true });
+        return false;
+      }
     }
     socketRef.current?.send(JSON.stringify({ type: "session.resume" }));
     setState("LISTENING");
-  }, [clearFallbackDraftTimer, clearFallbackPauseTimer]);
+    return true;
+  }, [clearFallbackDraftTimer, clearFallbackPauseTimer, emit]);
 
   const changeProvider = useCallback((provider: ProviderPreference) => {
     socketRef.current?.send(JSON.stringify({ type: "provider.change", provider }));
@@ -553,19 +629,17 @@ export function useRealtimeLecture(options: Options) {
 
   const end = useCallback(async () => {
     intentionalCloseRef.current = true;
+    if (fallbackActiveRef.current) pausedRef.current = true;
     setState("ENDING");
     const socket = socketRef.current;
+    const finishCapture = finishFallbackCapture();
     await flushPcmRef.current?.();
     pausedRef.current = true;
     clearFallbackPauseTimer();
     clearFallbackDraftTimer();
     await contextRef.current?.suspend().catch(() => undefined);
-    flushFallbackBlock();
-    if (fallbackRestartRef.current !== null) window.clearTimeout(fallbackRestartRef.current);
-    fallbackRestartRef.current = null;
-    speechRef.current?.stop();
+    await finishCapture;
     speechRef.current = null;
-    await Promise.race([waitForFallbackWork(), new Promise<void>((resolve) => window.setTimeout(resolve, 20_000))]);
     fallbackActiveRef.current = false;
     fallbackEpochRef.current += 1;
     if (socket?.readyState === WebSocket.OPEN) {
@@ -599,11 +673,13 @@ export function useRealtimeLecture(options: Options) {
     setLevel(0);
     if (DEBUG) setDebug((current) => ({ ...current, micActive: false, rms: 0 }));
     setState("ENDED");
-  }, [cleanupSocket, clearFallbackDraftTimer, clearFallbackPauseTimer, flushFallbackBlock, waitForFallbackWork]);
+  }, [cleanupSocket, clearFallbackDraftTimer, clearFallbackPauseTimer, finishFallbackCapture]);
 
   useEffect(() => () => {
     intentionalCloseRef.current = true;
     fallbackActiveRef.current = false;
+    fallbackDrainingRef.current = false;
+    fallbackStartRecognitionRef.current = null;
     fallbackEpochRef.current += 1;
     clearFallbackPauseTimer();
     clearFallbackDraftTimer();

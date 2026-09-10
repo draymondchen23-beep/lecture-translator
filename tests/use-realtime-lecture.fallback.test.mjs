@@ -7,6 +7,7 @@ import * as browser from "../app/lecture-translator/browser-incremental.mjs";
 import * as captions from "../app/lecture-translator/caption-stabilizer.mjs";
 import * as realtime from "../app/lecture-translator/realtime-caption-state.mjs";
 import * as browserCaptions from "../app/lecture-translator/browser-caption-accumulator.mjs";
+import * as recognitionStop from "../app/lecture-translator/browser-recognition-stop.mjs";
 
 const requireFromApp = createRequire(import.meta.url);
 const ts = requireFromApp("typescript");
@@ -20,7 +21,7 @@ function event(results, resultIndex = 0) {
   return { resultIndex, results: Object.assign(results, { length: results.length }) };
 }
 
-function loadHook(onEvent, translate = async (text) => `译：${text}`) {
+function loadHook(onEvent, translate = async (text) => `译：${text}`, control = {}) {
   const refs = [];
   let refIndex = 0;
   const react = {
@@ -30,23 +31,34 @@ function loadHook(onEvent, translate = async (text) => `译：${text}`) {
     useEffect() {},
   };
   let recognition;
+  const recognitions = [];
   class SpeechRecognition {
     start() {}
-    stop() {}
+    stop() {
+      if (control.stop) control.stop(this);
+      else queueMicrotask(() => this.onend?.());
+    }
     abort() {}
-    constructor() { recognition = this; }
+    constructor() { recognition = this; recognitions.push(this); }
   }
   const compiled = ts.transpileModule(hookSource, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText;
   const context = {
     exports: {}, module: { exports: {} }, console, process: { env: { NODE_ENV: "production" } }, crypto: { randomUUID: () => "uuid" },
+    WebSocket: { OPEN: 1, CLOSING: 2 },
     fetch: async (_url, options) => ({ ok: true, json: async () => ({ translation: await translate(JSON.parse(options.body).text) }) }),
-    window: { location: { hostname: "demo.chatgpt.site", protocol: "https:", host: "demo.chatgpt.site" }, setTimeout: (fn, delay) => { const timer = setTimeout(fn, delay); timer.unref(); return timer; }, clearTimeout, SpeechRecognition },
+    window: { location: { hostname: "demo.chatgpt.site", protocol: "https:", host: "demo.chatgpt.site" }, setTimeout: (fn, delay) => {
+      const testDelay = control.delays?.[delay];
+      const timer = setTimeout(fn, testDelay ?? delay);
+      if (testDelay === undefined) timer.unref();
+      return timer;
+    }, clearTimeout, SpeechRecognition },
     require(id) {
       if (id === "react") return react;
       if (id.endsWith("browser-incremental.mjs")) return browser;
       if (id.endsWith("caption-stabilizer.mjs")) return captions;
       if (id.endsWith("realtime-caption-state.mjs")) return realtime;
       if (id.endsWith("browser-caption-accumulator.mjs")) return browserCaptions;
+      if (id.endsWith("browser-recognition-stop.mjs")) return recognitionStop;
       return {};
     },
   };
@@ -54,7 +66,7 @@ function loadHook(onEvent, translate = async (text) => `译：${text}`) {
   vm.runInNewContext(compiled, context);
   refIndex = 0;
   const api = context.module.exports.useRealtimeLecture({ sessionId: "s", sequenceBase: 0, provider: "qwen", sourceLanguage: "en", targetLanguage: "zh", vad: true, terminology: {}, saveAudio: false, onAudioReady() {}, onEvent });
-  return { api, get recognition() { return recognition; } };
+  return { api, recognitions, get recognition() { return recognition; } };
 }
 
 test("unpunctuated final result ids accumulate until capture pause without loss", async () => {
@@ -119,6 +131,7 @@ test("screenshot word finals and recognizer restarts produce one phrase and one 
     runtime.recognition.onresult(event([result(word, true)]));
     assert.equal([...rows.values()].filter((row) => row.sourceStatus === "final").length, 0);
     runtime.recognition.onend();
+    await new Promise((resolve) => setTimeout(resolve, 275));
   }
   runtime.recognition.onresult(event([result("experience.", true)]));
   await runtime.api.pause();
@@ -161,4 +174,99 @@ test("a late short draft translation cannot replace the completed sentence trans
   assert.equal(finals.length, 1);
   assert.equal(finals[0].translationText, "译：the membrane controls the movement of ions.");
   assert.equal(events.some((item) => item.sourceText?.endsWith("ions.") && item.translationText === "译：the membrane controls the movement of"), false);
+});
+
+for (const action of ["pause", "end"]) {
+  test(`${action} waits for stop-time final corrections before translating the tail`, async () => {
+    const rows = new Map();
+    const requests = [];
+    const runtime = loadHook((item) => { if (item.type === "segment.upsert") rows.set(item.segmentId, item); }, async (text) => {
+      requests.push(text);
+      return `译：${text}`;
+    }, { stop(recognition) {
+      queueMicrotask(() => {
+        recognition.onresult(event([result("the cell.", true)]));
+        recognition.onresult(event([result("the cell membrane.", true)]));
+        assert.equal([...rows.values()].filter((row) => row.sourceStatus === "final").length, 0);
+        recognition.onend();
+      });
+    } });
+    await runtime.api.start();
+    runtime.recognition.onresult(event([result("the sell", false)]));
+    await runtime.api[action]();
+    const finals = [...rows.values()].filter((row) => row.sourceStatus === "final");
+    assert.equal(finals.length, 1);
+    assert.equal(finals[0].sourceText, "the cell membrane.");
+    assert.equal(finals[0].translationText, "译：the cell membrane.");
+    assert.deepEqual(requests, ["the cell membrane."]);
+  });
+}
+
+test("stop timeout saves a short tentative tail and quarantines stale callbacks after resume", async () => {
+  const rows = new Map();
+  const runtime = loadHook((item) => { if (item.type === "segment.upsert") rows.set(item.segmentId, item); }, undefined,
+    { stop() {}, delays: { 1500: 5 } });
+  await runtime.api.start();
+  const oldRecognition = runtime.recognition;
+  oldRecognition.onresult(event([result("thank you", false)]));
+  const lateResult = oldRecognition.onresult;
+  const lateEnd = oldRecognition.onend;
+  await runtime.api.pause();
+  assert.equal([...rows.values()][0].sourceText, "thank you");
+  assert.equal([...rows.values()][0].translationText, "译：thank you");
+  assert.equal(await runtime.api.resume(), true);
+  assert.notEqual(runtime.recognition, oldRecognition);
+  lateResult(event([result("thank you thank you ghost words.", true)]));
+  lateEnd();
+  runtime.recognition.onresult(event([result("new lecture words", false)]));
+  await runtime.api.pause();
+  const finals = [...rows.values()].filter((row) => row.sourceStatus === "final");
+  assert.deepEqual(finals.map((row) => row.sourceText), ["thank you", "new lecture words"]);
+});
+
+test("immediate resume waits for recognition and translation to finish exactly once", async () => {
+  const rows = new Map();
+  let stopped;
+  let releaseTranslation;
+  const runtime = loadHook((item) => { if (item.type === "segment.upsert") rows.set(item.segmentId, item); }, async (text) => {
+    await new Promise((resolve) => { releaseTranslation = resolve; });
+    return `译：${text}`;
+  }, { stop(recognition) { stopped = recognition; } });
+  await runtime.api.start();
+  runtime.recognition.onresult(event([result("last thought", false)]));
+  const pausing = runtime.api.pause();
+  const resuming = runtime.api.resume();
+  stopped.onresult(event([result("last thought completed", true)]));
+  stopped.onend();
+  await new Promise(setImmediate);
+  assert.equal(runtime.recognitions.length, 1);
+  assert.equal(typeof releaseTranslation, "function");
+  releaseTranslation();
+  await pausing;
+  assert.equal(await resuming, true);
+  assert.equal(runtime.recognitions.length, 2);
+  const finals = [...rows.values()].filter((row) => row.sourceStatus === "final");
+  assert.equal(finals.length, 1);
+  assert.equal(finals[0].translationText, "译：last thought completed");
+  const cleanup = runtime.api.pause();
+  stopped.onend();
+  await cleanup;
+});
+
+test("translation timeout preserves source and marks the last row as failed instead of pending", async () => {
+  const rows = new Map();
+  let release;
+  const runtime = loadHook((item) => { if (item.type === "segment.upsert") rows.set(item.segmentId, item); }, async () => {
+    await new Promise((resolve) => { release = resolve; });
+    return "迟到的译文";
+  }, { delays: { 20000: 5 } });
+  await runtime.api.start();
+  runtime.recognition.onresult(event([result("goodbye", false)]));
+  await runtime.api.end();
+  const final = [...rows.values()].find((row) => row.sourceStatus === "final");
+  assert.equal(final.sourceText, "goodbye");
+  assert.equal(final.translationStatus, "error");
+  release();
+  await new Promise(setImmediate);
+  assert.equal(rows.get(final.segmentId).translationText, "");
 });
