@@ -40,3 +40,5 @@ yarn-error.log*
 /outputs/
 /work/
 *.tsbuildinfo
+/public/sat/model/
+/public/sat/vendor/

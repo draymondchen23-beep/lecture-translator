@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { bestTranscript, shouldProcessBrowserResult, shouldStartBrowserFallbackImmediately } from "./browser-incremental.mjs";
 import { DEFAULT_BOUNDARY_CONFIG, splitReadingUnits } from "./caption-stabilizer.mjs";
 import { BrowserCaptionAccumulator, isReadableCaption } from "./browser-caption-accumulator.mjs";
+import { SatCaptionAccumulator } from "./sat-caption-accumulator.mjs";
+import { createSatClient } from "./sat-client.mjs";
 import { stopBrowserRecognition } from "./browser-recognition-stop.mjs";
 import { createBoundedTranslationQueue, RealtimeCaptionNormalizer } from "./realtime-caption-state.mjs";
 import type { LectureState, ProviderPreference, RealtimeServerEvent } from "./types";
@@ -62,6 +64,10 @@ function trace(event: string, details: Record<string, unknown> = {}) {
 }
 
 export function useRealtimeLecture(options: Options) {
+  const [segmentation, setSegmentation] = useState("SaT 断句 · 首次使用需加载约 408 MB");
+  const satRef = useRef<ReturnType<typeof createSatClient> | null>(null);
+  const satWorkRef = useRef<Promise<void> | null>(null);
+  const startingRef = useRef(false);
   const [state, setState] = useState<LectureState>("IDLE");
   const [level, setLevel] = useState(0);
   const [message, setMessage] = useState("");
@@ -292,7 +298,7 @@ export function useRealtimeLecture(options: Options) {
       fallbackDraftFirstAtRef.current = 0;
       const sequence = fallbackSequenceRef.current;
       const row = fallbackRowsRef.current.get(sequence);
-      if (!row || row.sourceStatus !== "draft" || !isReadableCaption(row.sourceText) || splitReadingUnits(row.sourceText).length > 1 || row.requestedSourceRevision === row.sourceRevision) return;
+      if (!row || row.sourceStatus !== "draft" || !isReadableCaption(row.sourceText) || (!satRef.current && splitReadingUnits(row.sourceText).length > 1) || row.requestedSourceRevision === row.sourceRevision) return;
       row.requestedSourceRevision = row.sourceRevision;
       if (fallbackTranslationQueueRef.current?.enqueue({ sequence, startedAt: row.startedAt, sourceText: row.sourceText, segmentId: row.segmentId, sourceRevision: row.sourceRevision, requestId: `${row.segmentId}:${row.sourceRevision}`, epoch: fallbackEpochRef.current, final: false }) === false) row.requestedSourceRevision = 0;
     }, delay);
@@ -319,7 +325,7 @@ export function useRealtimeLecture(options: Options) {
     }
     row.sourceStatus = sourceStatus;
     if (sourceChanged || !row.translationText) row.translationStatus = "pending";
-    emit({ type: "segment.upsert", sessionId, segmentId: row.segmentId, sequence, startTime: row.startedAt, endTime: sourceStatus === "final" ? Date.now() : 0, sourceText: row.sourceText, sourceRevision: row.sourceRevision, sourceStatus: row.sourceStatus, translationText: row.translationText, translationRevision: row.translationRevision, translationStatus: row.translationStatus, provider: "qwen" });
+    emit({ type: "segment.upsert", sessionId, segmentId: row.segmentId, sequence, startTime: row.startedAt, endTime: sourceStatus === "final" ? Date.now() : 0, sourceText: row.sourceText, sourceRevision: row.sourceRevision, sourceStatus: row.sourceStatus, translationText: row.translationText, translationRevision: row.translationRevision, translationStatus: row.translationStatus, provider: "qwen", segmentation: satRef.current ? "sat" : "rules" });
     return { row, sourceChanged };
   }, [emit]);
 
@@ -341,7 +347,7 @@ export function useRealtimeLecture(options: Options) {
       publishFallbackRow(fallbackSequenceRef.current, update.displayText, "draft", fallbackStartedAtRef.current || Date.now());
       // Stable source is shown immediately; this bounded, max-wait scheduler
       // turns it into a replaceable Chinese draft without per-token requests.
-      if (update.stableText && draftUnits.length === 1 && isReadableCaption(update.displayText)) scheduleFallbackDraft();
+      if (update.stableText && (satRef.current || draftUnits.length === 1) && isReadableCaption(update.displayText)) scheduleFallbackDraft();
     } else {
       // A correction or commit can consume the last visible draft. Explicitly
       // clear that replaceable row so its old EN/ZH pair cannot linger.
@@ -351,6 +357,30 @@ export function useRealtimeLecture(options: Options) {
       }
     }
   }, [emit, publishFallbackRow, queueFallbackCommit, scheduleFallbackDraft]);
+
+  const segmentFallback = useCallback(async (force = false) => {
+    if (satWorkRef.current) {
+      if (!force) return;
+      await satWorkRef.current;
+    }
+    const accumulator = fallbackBrowserCaptionsRef.current;
+    const client = satRef.current;
+    const epoch = fallbackEpochRef.current;
+    if (!(accumulator instanceof SatCaptionAccumulator) || !client) return;
+    const work = (async () => {
+      try {
+        const update = await accumulator.segment(client.split, { force });
+        if (epoch === fallbackEpochRef.current && fallbackBrowserCaptionsRef.current === accumulator) publishFallbackUpdate(update);
+      } catch {
+        if (epoch !== fallbackEpochRef.current || fallbackBrowserCaptionsRef.current !== accumulator) return;
+        client.close(); satRef.current = null;
+        setSegmentation("SaT 暂不可用 · 已回退旧规则，原文保留");
+        publishFallbackUpdate(accumulator.fallback(Date.now(), force, fallbackDrainingRef.current));
+      }
+    })();
+    satWorkRef.current = work;
+    try { await work; } finally { if (satWorkRef.current === work) satWorkRef.current = null; }
+  }, [publishFallbackUpdate]);
 
   const scheduleFallbackPause = useCallback((delay: number = DEFAULT_BOUNDARY_CONFIG.boundaryGraceMs) => {
     clearFallbackPauseTimer();
@@ -362,18 +392,20 @@ export function useRealtimeLecture(options: Options) {
         const update = fallbackBrowserCaptionsRef.current?.advance(Date.now());
         if (update) {
           publishFallbackUpdate(update);
-          if (isReadableCaption(update.displayText)) scheduleNext(DEFAULT_BOUNDARY_CONFIG.boundaryGraceMs);
+          void segmentFallback();
+          if (isReadableCaption(update.displayText) || (satRef.current && update.displayText)) scheduleNext(DEFAULT_BOUNDARY_CONFIG.boundaryGraceMs);
         }
       }, nextDelay);
     };
     scheduleNext(delay);
-  }, [clearFallbackPauseTimer, publishFallbackUpdate]);
+  }, [clearFallbackPauseTimer, publishFallbackUpdate, segmentFallback]);
 
-  const flushFallbackBlock = useCallback(() => {
+  const flushFallbackBlock = useCallback(async () => {
     clearFallbackPauseTimer();
+    if (satRef.current) { await segmentFallback(true); if (satRef.current) return; }
     const update = fallbackBrowserCaptionsRef.current?.advance(Date.now(), { force: true });
     if (update) publishFallbackUpdate(update);
-  }, [clearFallbackPauseTimer, publishFallbackUpdate]);
+  }, [clearFallbackPauseTimer, publishFallbackUpdate, segmentFallback]);
 
   const finishFallbackCapture = useCallback(() => {
     if (fallbackFinishRef.current) return fallbackFinishRef.current;
@@ -383,6 +415,7 @@ export function useRealtimeLecture(options: Options) {
     if (fallbackRestartRef.current !== null) window.clearTimeout(fallbackRestartRef.current);
     fallbackRestartRef.current = null;
     fallbackDrainingRef.current = true;
+    if (fallbackBrowserCaptionsRef.current instanceof SatCaptionAccumulator) fallbackBrowserCaptionsRef.current.invalidate();
     const recognition = speechRef.current;
     const epoch = fallbackEpochRef.current;
     const finish = (async () => {
@@ -401,7 +434,7 @@ export function useRealtimeLecture(options: Options) {
       }
       fallbackDrainingRef.current = false;
       if (!fallbackActiveRef.current || epoch !== fallbackEpochRef.current) return;
-      flushFallbackBlock();
+      await flushFallbackBlock();
       let timeout: number | undefined;
       await Promise.race([
         waitForFallbackWork(),
@@ -444,7 +477,7 @@ export function useRealtimeLecture(options: Options) {
     fallbackFinishRef.current = null;
     clearFallbackPauseTimer();
     clearFallbackDraftTimer();
-    fallbackBrowserCaptionsRef.current = new BrowserCaptionAccumulator();
+    fallbackBrowserCaptionsRef.current = satRef.current ? new SatCaptionAccumulator() : new BrowserCaptionAccumulator();
 
     const beginRecognition = () => {
       if (!fallbackActiveRef.current || pausedRef.current || intentionalCloseRef.current) return;
@@ -466,6 +499,7 @@ export function useRealtimeLecture(options: Options) {
           if (update) publishFallbackUpdate(update);
           if (!fallbackDrainingRef.current) {
             if (!result.isFinal) setState("SPEAKING");
+            void segmentFallback();
             scheduleFallbackPause();
           }
         }
@@ -496,7 +530,7 @@ export function useRealtimeLecture(options: Options) {
     beginRecognition();
     emit({ type: "state", state: "LISTENING", provider: "qwen", message: "Browser transcription compatibility mode" });
     return true;
-  }, [cleanupSocket, clearFallbackDraftTimer, clearFallbackPauseTimer, emit, publishFallbackUpdate, scheduleFallbackPause, translateFallbackCommit]);
+  }, [cleanupSocket, clearFallbackDraftTimer, clearFallbackPauseTimer, emit, publishFallbackUpdate, scheduleFallbackPause, segmentFallback, translateFallbackCommit]);
 
   const startMicrophone = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error("This browser cannot access a microphone.");
@@ -552,7 +586,8 @@ export function useRealtimeLecture(options: Options) {
   }, [sendChunk]);
 
   const start = useCallback(async () => {
-    if (streamRef.current || fallbackActiveRef.current) return;
+    if (streamRef.current || fallbackActiveRef.current || startingRef.current) return;
+    startingRef.current = true;
     intentionalCloseRef.current = false;
     pausedRef.current = false;
     realtimeSessionRef.current = optionsRef.current.sessionId;
@@ -561,6 +596,25 @@ export function useRealtimeLecture(options: Options) {
     setMessage("");
     setState("CONNECTING");
     try {
+      const speechWindow = window as unknown as { SpeechRecognition?: BrowserSpeechConstructor; webkitSpeechRecognition?: BrowserSpeechConstructor };
+      if (speechWindow.SpeechRecognition || speechWindow.webkitSpeechRecognition) {
+        try {
+          if (!satRef.current) {
+            setSegmentation("正在加载 SaT · 首次下载约 408 MB，完成后开始听课");
+            satRef.current = createSatClient((progress: number) => setSegmentation(`正在加载 SaT · ${progress}%（模型在本机运行）`));
+            await satRef.current.load();
+          }
+          setSegmentation("SaT 本机断句 · 未完成的尾句暂不锁定");
+        } catch {
+          satRef.current?.close(); satRef.current = null;
+          setSegmentation("SaT 加载失败 · 本节课使用旧规则，可结束后重试");
+        }
+      } else setSegmentation("当前浏览器使用服务端断句 · Chrome 支持本机 SaT");
+      if (intentionalCloseRef.current || pausedRef.current) return;
+      if (satRef.current) {
+        if (optionsRef.current.saveAudio) await startMicrophone();
+        if (startBrowserFallback()) return;
+      }
       if (shouldStartBrowserFallbackImmediately(window.location.hostname) && !optionsRef.current.saveAudio && startBrowserFallback()) return;
       await startMicrophone();
       try {
@@ -583,7 +637,7 @@ export function useRealtimeLecture(options: Options) {
         : error instanceof Error ? error.message : "Unable to start the lecture.";
       emit({ type: "error", message: errorMessage, recoverable: false });
       throw error;
-    }
+    } finally { startingRef.current = false; }
   }, [connect, emit, startBrowserFallback, startMicrophone]);
 
   const pause = useCallback(async () => {
@@ -610,7 +664,7 @@ export function useRealtimeLecture(options: Options) {
     if (fallbackActiveRef.current) {
       fallbackEpochRef.current += 1;
       fallbackFinishRef.current = null;
-      fallbackBrowserCaptionsRef.current = new BrowserCaptionAccumulator();
+      fallbackBrowserCaptionsRef.current = satRef.current ? new SatCaptionAccumulator() : new BrowserCaptionAccumulator();
       fallbackStartedAtRef.current = Date.now();
       try { fallbackStartRecognitionRef.current?.(); } catch {
         pausedRef.current = true;
@@ -629,6 +683,7 @@ export function useRealtimeLecture(options: Options) {
 
   const end = useCallback(async () => {
     intentionalCloseRef.current = true;
+    if (startingRef.current) { satRef.current?.close(); satRef.current = null; }
     if (fallbackActiveRef.current) pausedRef.current = true;
     setState("ENDING");
     const socket = socketRef.current;
@@ -684,6 +739,7 @@ export function useRealtimeLecture(options: Options) {
     clearFallbackPauseTimer();
     clearFallbackDraftTimer();
     fallbackBrowserCaptionsRef.current = null;
+    satRef.current?.close(); satRef.current = null;
     if (fallbackRestartRef.current !== null) window.clearTimeout(fallbackRestartRef.current);
     speechRef.current?.abort();
     cleanupSocket();
@@ -692,5 +748,5 @@ export function useRealtimeLecture(options: Options) {
     contextRef.current?.close().catch(() => undefined);
   }, [cleanupSocket, clearFallbackDraftTimer, clearFallbackPauseTimer]);
 
-  return { state, level, message, metrics, debug, start, pause, resume, end, changeProvider };
+  return { state, level, message, segmentation, metrics, debug, start, pause, resume, end, changeProvider };
 }

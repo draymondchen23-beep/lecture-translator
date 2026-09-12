@@ -8,6 +8,7 @@ import * as captions from "../app/lecture-translator/caption-stabilizer.mjs";
 import * as realtime from "../app/lecture-translator/realtime-caption-state.mjs";
 import * as browserCaptions from "../app/lecture-translator/browser-caption-accumulator.mjs";
 import * as recognitionStop from "../app/lecture-translator/browser-recognition-stop.mjs";
+import * as satCaptions from "../app/lecture-translator/sat-caption-accumulator.mjs";
 
 const requireFromApp = createRequire(import.meta.url);
 const ts = requireFromApp("typescript");
@@ -59,6 +60,11 @@ function loadHook(onEvent, translate = async (text) => `译：${text}`, control 
       if (id.endsWith("realtime-caption-state.mjs")) return realtime;
       if (id.endsWith("browser-caption-accumulator.mjs")) return browserCaptions;
       if (id.endsWith("browser-recognition-stop.mjs")) return recognitionStop;
+      if (id.endsWith("sat-caption-accumulator.mjs")) return satCaptions;
+      if (id.endsWith("sat-client.mjs")) return { createSatClient() {
+        if (!control.sat) throw new Error('model unavailable in fallback tests');
+        return { load: async () => true, split: control.sat, close() {} };
+      } };
       return {};
     },
   };
@@ -68,6 +74,44 @@ function loadHook(onEvent, translate = async (text) => `译：${text}`, control 
   const api = context.module.exports.useRealtimeLecture({ sessionId: "s", sequenceBase: 0, provider: "qwen", sourceLanguage: "en", targetLanguage: "zh", vad: true, terminology: {}, saveAudio: false, onAudioReady() {}, onEvent });
   return { api, recognitions, get recognition() { return recognition; } };
 }
+
+test("SaT commits a confirmed long sentence without the legacy 18-word cut and translates the final tail", async () => {
+  const events = [];
+  const sentence = 'The electrical signal travels along the entire length of the nerve cell and carries information from one part of the body to another';
+  const tail = 'This next sentence is still being spoken';
+  const runtime = loadHook(item => events.push(item), undefined, {
+    sat: async text => ({ boundaries: text.startsWith(sentence) ? [sentence.length - 1, text.length - 1] : [text.length - 1] }),
+  });
+  await runtime.api.start();
+  runtime.recognition.onresult(event([result(`${sentence} ${tail}`, true)]));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(events.filter(item => item.sourceStatus === 'final').length, 0);
+  runtime.recognition.onresult(event([result(`${sentence} ${tail} now`, true)]));
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.ok(events.some(item => item.sourceStatus === 'final' && item.sourceText === sentence && item.segmentation === 'sat'));
+  await runtime.api.end();
+  const rows = [...new Map(events.filter(item => item.type === 'segment.upsert').map(item => [item.segmentId, item])).values()].filter(row => row.sourceText);
+  assert.deepEqual(rows.map(row => row.sourceText), [sentence, `${tail} now`]);
+  assert.ok(rows.every(row => row.sourceStatus === 'final' && row.translationText === `译：${row.sourceText}`));
+});
+
+test("SaT model failure during stop preserves the final corrected words", async () => {
+  const events = [];
+  let rejectSplit;
+  const runtime = loadHook(item => events.push(item), undefined, {
+    sat: () => new Promise((_, reject) => { rejectSplit = reject; }),
+    stop(recognition) {
+      rejectSplit(new Error('worker failed'));
+      queueMicrotask(() => { recognition.onresult(event([result('the final corrected neuron', true)])); recognition.onend?.(); });
+    },
+  });
+  await runtime.api.start();
+  runtime.recognition.onresult(event([result('the original wrong word', true)]));
+  await runtime.api.end();
+  const rows = [...new Map(events.filter(item => item.type === 'segment.upsert').map(item => [item.segmentId, item])).values()].filter(row => row.sourceText);
+  assert.equal(rows.map(row => row.sourceText).join(' '), 'the final corrected neuron');
+  assert.ok(rows.every(row => row.translationText === `译：${row.sourceText}`));
+});
 
 test("unpunctuated final result ids accumulate until capture pause without loss", async () => {
   const events = [];

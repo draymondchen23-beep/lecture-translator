@@ -30,6 +30,7 @@ export type TranscriptSegment = {
   isFinal: true;
   sourceRevision?: number;
   sourceStatus?: "draft" | "final";
+  segmentation?: "sat" | "rules";
   translationRevision?: number;
   translationStatus?: "idle" | "pending" | "draft" | "final" | "error";
   createdAt: string;
@@ -114,6 +115,7 @@ export type RealtimeServerEvent =
     sourceText: string;
     sourceRevision: number;
     sourceStatus: "draft" | "final";
+    segmentation?: "sat" | "rules";
     translationText: string;
     translationRevision: number;
     translationStatus: "idle" | "pending" | "draft" | "final" | "error";

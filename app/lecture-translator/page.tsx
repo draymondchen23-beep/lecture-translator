@@ -285,7 +285,7 @@ const PairedSegment = memo(function PairedSegment({ segment, terminology, replay
   segment: TranscriptSegment; terminology: Record<string, string>; replay: boolean;
   onPair(id: string, source: string, translation: string, index: number, target: string): void;
 }) {
-  const units = useMemo(() => splitReadingUnits(segment.sourceText), [segment.sourceText]);
+  const units = useMemo(() => segment.segmentation === "sat" ? [segment.sourceText] : splitReadingUnits(segment.sourceText), [segment.sourceText, segment.segmentation]);
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
   const { id, sessionId, sourceText, translatedText, sourceStatus } = segment;
@@ -426,6 +426,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
           translatedText: sourceFresh && translationFresh && incoming.translationText !== undefined ? incoming.translationText
             : sourceFresh && incoming.sourceText !== undefined && incoming.sourceText !== existing.sourceText ? "" : existing.translatedText,
           provider: incoming.provider ?? existing.provider,
+          segmentation: sourceFresh ? incoming.segmentation ?? existing.segmentation : existing.segmentation,
           speaker: incoming.speaker ?? existing.speaker,
           isFinal: incoming.sourceStatus === "final" ? true : existing.isFinal,
           sourceRevision: sourceFresh ? incoming.sourceRevision ?? existing.sourceRevision : existing.sourceRevision, sourceStatus: sourceFresh ? incoming.sourceStatus ?? existing.sourceStatus : existing.sourceStatus,
@@ -437,6 +438,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
           sourceLanguage: "en", targetLanguage: "zh", provider: incoming.provider ?? "qwen", speaker: incoming.speaker || "Lecturer", confidence: null,
           isFinal: true, createdAt: new Date().toISOString(), bookmarked: false, refinementState: "idle",
           sourceRevision: incoming.sourceRevision, sourceStatus: incoming.sourceStatus,
+          segmentation: incoming.segmentation,
           translationRevision: incoming.translationRevision, translationStatus: incoming.translationStatus,
         } as TranscriptSegment;
         if (!existing) next.paragraphId = assignParagraphId(session.segments, next);
@@ -683,6 +685,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
   }, [historyMenuId]);
 
   const startLecture = async () => {
+    if (isRecording) return;
     if (replay) { setNotice("Replay mode uses fixture events; microphone is disabled."); return; }
     if (providerStatusLoaded && !providerStatus.qwen) {
       setNotice("Qwen realtime translation is not configured on the server.");
@@ -696,11 +699,16 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
     const startedAt = new Date().toISOString();
     updateSession(activeSession.id, (session) => ({ ...session, duration: 0, startedAt, endedAt: null, status: "recording", provider: "qwen" }));
     setTab("transcript");
-    try { await realtime.start(); }
+    try {
+      await realtime.start();
+      // The first model download is preparation time, not lecture duration.
+      updateSession(activeSession.id, (session) => session.status === "recording" ? { ...session, startedAt: new Date().toISOString(), duration: 0 } : session);
+    }
     catch { updateSession(activeSession.id, (session) => ({ ...session, status: "draft" })); }
   };
 
   const pauseLecture = () => {
+    if (realtime.state === "CONNECTING") return;
     realtime.pause();
     updateSession(activeSession.id, (session) => ({ ...session, status: "paused", duration: elapsed }));
   };
@@ -997,7 +1005,8 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
             </div>
             {transcriptView === "paired" ? <div className={styles.readingLegend}><span className={styles.termLegend}>学术术语</span><span className={styles.idiomLegend}>口语表达</span><span>点词查看解释</span></div> : null}
           </div>
-          {!activeSession.segments.length && !partial.source ? <div className={styles.emptyState}><h2>Start a lecture</h2><p>Live transcription, translation and AI notes.</p>{providerStatusLoaded && !providerStatus.qwen && !providerStatus.tencent ? <div className={styles.setupNotice}><strong>Translation setup required</strong><span>Qwen and Tencent are not configured on this server.</span><button onClick={() => setSettingsOpen(true)}>View API status</button></div> : null}<button onClick={startLecture}><Icon name="mic" /> Start lecture</button></div> : null}
+          <p className={styles.privacyNote} role="status">{realtime.segmentation}</p>
+          {!activeSession.segments.length && !partial.source ? <div className={styles.emptyState}><h2>Start a lecture</h2><p>Live transcription, translation and AI notes.</p>{providerStatusLoaded && !providerStatus.qwen && !providerStatus.tencent ? <div className={styles.setupNotice}><strong>Translation setup required</strong><span>Qwen and Tencent are not configured on this server.</span><button onClick={() => setSettingsOpen(true)}>View API status</button></div> : null}<button onClick={startLecture} disabled={isRecording}><Icon name="mic" /> Start lecture</button></div> : null}
           {!showOlder && filteredParagraphs.length > 500 ? <button className={styles.loadOlder} onClick={() => setShowOlder(true)}>Show {filteredParagraphs.length - 500} older sentences</button> : null}
           {(orderedParagraphs.length || tab === "bookmarks") ? <div ref={transcriptRef} className={styles.transcriptStream} tabIndex={0} onWheel={suspendFollow} onTouchMove={suspendFollow} onKeyDown={(event) => { if (["ArrowUp", "PageUp", "Home", "ArrowDown", "PageDown", "End"].includes(event.key)) suspendFollow(); }} onScroll={() => { if (!autoFollowing) requestAnimationFrame(captureManualAnchor); }}>
             <div className={`${styles.columnTitle} ${transcriptView === "paired" ? styles.pairedTitle : ""}`}>{transcriptView === "paired" ? <span>English → 中文 · 中英逐句对照</span> : <><span>English</span><span>中文</span></>}</div>
@@ -1027,7 +1036,7 @@ function LectureTranslatorWorkspace({ user, replay = false }: { user: SignedInUs
         {!isRecording ? <button className={styles.primaryControl} onClick={startLecture}><span><Icon name="mic" /></span> Start lecture</button> : <>
           <div className={styles.recordingStatus}><i /><span>{activeSession.status === "paused" ? "Paused" : `${stateNames[realtime.state]} · ${formatTime(elapsed)}`}</span></div>
           <AudioBars level={realtime.level} />
-          {activeSession.status === "paused" ? <button className={styles.roundControl} onClick={resumeLecture} title="Resume"><Icon name="play" /></button> : <button className={styles.roundControl} onClick={pauseLecture} title="Pause"><Icon name="pause" /></button>}
+          {activeSession.status === "paused" ? <button className={styles.roundControl} onClick={resumeLecture} title="Resume"><Icon name="play" /></button> : <button className={styles.roundControl} onClick={pauseLecture} disabled={realtime.state === "CONNECTING"} title="Pause"><Icon name="pause" /></button>}
           <button className={`${styles.roundControl} ${styles.endControl}`} onClick={endLecture} title="End lecture"><Icon name="stop" /></button>
         </>}
         <span className={styles.dockDivider} />

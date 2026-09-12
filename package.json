@@ -6,6 +6,8 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "predev": "node scripts/prepare-sat-assets.mjs",
+    "prebuild": "node scripts/prepare-sat-assets.mjs",
     "dev": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext dev",
     "build": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext build",
     "start": "WRANGLER_LOG_PATH=.wrangler/wrangler.log vinext start",
@@ -14,7 +16,9 @@
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "@huggingface/tokenizers": "0.2.0",
     "drizzle-orm": "0.45.2",
+    "onnxruntime-web": "1.29.0",
     "react": "19.2.6",
     "react-dom": "19.2.6"
   },
@@ -41,8 +45,8 @@
     "typescript-eslint": "8.59.3",
     "vinext": "1.0.0-beta.2",
     "vite": "8.0.13",
-    "ws": "8.18.0",
-    "wrangler": "4.92.0"
+    "wrangler": "4.92.0",
+    "ws": "8.18.0"
   },
   "type": "module"
 }

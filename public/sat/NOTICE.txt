@@ -1,0 +1,38 @@
+SaT model: segment-any-text/sat-3l-sm
+https://huggingface.co/segment-any-text/sat-3l-sm
+Revision: 137da054051ad9f1eac42025f758db4ac9f22535
+Copyright (c) 2024 Benjamin Minixhofer, Markus Frohmann, Igor Sterner
+Source: https://github.com/segment-any-text/wtpsplit
+
+ONNX Runtime Web 1.29.0
+Copyright (c) Microsoft Corporation
+Source: https://github.com/microsoft/onnxruntime
+
+The above components are provided under the MIT License:
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Tokenizer: @huggingface/tokenizers 0.2.0, Apache-2.0.
+Full license: /sat/vendor/tokenizers-LICENSE
+Vocabulary: facebookAI/xlm-roberta-base, revision
+e73636d4f797dec63c3081bb6ed5c7b0bb3f2089.
+https://huggingface.co/facebookAI/xlm-roberta-base
+
+The model weights and vocabulary are unmodified. The local browser adapter
+validates tokenizer offsets and applies sentence commit stability separately.
