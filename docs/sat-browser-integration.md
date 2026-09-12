@@ -6,9 +6,11 @@ unchanged from the local comparison (threshold .25, stride 128, block 256, hat
 weighting). WASM uses one thread so the existing site needs no COOP/COEP changes.
 
 The model runs in a module Worker. `predev`/`prebuild` generate same-origin static
-assets from the pinned Hugging Face cache (or download those exact revisions on
-a clean machine). The 408 MiB model is divided into 20 MiB hosting assets, not
-committed as binaries. Browser Cache Storage retains verified chunks when quota
+metadata and vocabulary from the pinned Hugging Face cache (or download those
+exact revisions on a clean machine). The existing site streams the public
+408 MiB model as fixed 20 MiB HTTP ranges from Hugging Face; weight binaries are
+not bundled in the site archive or committed. This avoids a 416 MB publication
+upload which timed out twice. Browser Cache Storage retains verified chunks when quota
 allows; cache failure does not prevent inference. No cloud inference service or
 new runtime secret is added. The existing speech-recognition and translation
 services remain responsible for audio transcription and Chinese translation.
@@ -28,7 +30,7 @@ input, or pending text over 6,000 characters visibly falls back to existing rule
 Browsers without SpeechRecognition retain the existing server-backed path. Old
 saved lecture records are not retrospectively resegmented.
 
-Validation: TypeScript, production build, and 106 tests passed. Additional actual
+Validation: TypeScript, production build, and 108 tests passed. Additional actual
 WASM integration replay used the fixed MIT 401-word/53-cue comparison input:
 28 rows committed before EOF, 29 final rows, all 401 words preserved, complete
 13-word final sentence retained. Against the frozen rubric: 3 forbidden cuts

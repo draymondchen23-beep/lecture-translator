@@ -7,7 +7,7 @@ const base = '/sat/model/137da054051ad9f1eac42025f758db4ac9f22535/';
 async function asset(file, sha256) {
   let cache;
   try { cache = await caches.open('lecture-sat-v1'); } catch { /* Storage denied: use network. */ }
-  const url = new URL(base + file, self.location.origin).href;
+  const url = new URL(file.startsWith('part-') ? '/api/sat-model/' + file : base + file, self.location.origin).href;
   const cached = await cache?.match(url);
   const response = cached || await fetch(url);
   if (!response.ok) throw new Error(`模型文件加载失败 (${response.status})`);
